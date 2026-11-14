@@ -336,7 +336,7 @@ function G:source(x,y,w)
   Size=UDim2.fromOffset(bw,36),BackgroundColor3=C.tile,ZIndex=Z+3}),10)
  b.Activated:Connect(function()if self.repoBox then self.repoBox:CaptureFocus()end end)
  stroke(b,C.white,.8,1)
- Icons.image(b,'globe',16,C.text,{AnchorPoint=Vector2.new(0,.5),Position=UDim2.new(0,12,.5,0),ZIndex=Z+4})
+ Icons.image(b,'github',18,C.text,{AnchorPoint=Vector2.new(0,.5),Position=UDim2.new(0,12,.5,0),ZIndex=Z+4})
  self.repoBox=make('TextBox',b,{Text=REPO,TextEditable=false,ClearTextOnFocus=false,BackgroundTransparency=1,TextSize=13,FontFace=Theme.font(Enum.FontWeight.Bold),
   TextColor3=C.text,TextXAlignment=Enum.TextXAlignment.Left,Position=UDim2.fromOffset(36,0),Size=UDim2.new(1,-44,1,0),ZIndex=Z+4})
  return 40

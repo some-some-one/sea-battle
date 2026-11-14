@@ -667,6 +667,65 @@ def _(g):
     g.line([(18, 20), (110, 110)], 8)
 
 
+# The GitHub mark, for the link to the source repository (GitHub's logo guidelines allow it for linking to
+# GitHub). Its published 16-unit SVG outline, flattened here: M, C/c and the closing arc A.
+GITHUB_MARK = ("M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49"
+               "-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58"
+               " 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31"
+               "-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09"
+               " 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87"
+               " 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0"
+               " 0016 8c0-4.42-3.58-8-8-8z")
+
+
+def _svg_points(path):
+    import re
+    toks = re.findall(r"[MCcAz]|-?(?:\d+\.?\d*|\.\d+)", path)
+    pts, i, cmd, cur = [], 0, None, (0.0, 0.0)
+    def num():
+        nonlocal i
+        v = float(toks[i]); i += 1; return v
+    while i < len(toks):
+        t = toks[i]
+        if t in "MCcAz":
+            cmd = t; i += 1
+            if t == "z":
+                continue
+        if cmd == "M":
+            cur = (num(), num()); pts.append(cur)
+        elif cmd in "Cc":
+            c = [num() for _ in range(6)]
+            if cmd == "c":
+                c = [c[0] + cur[0], c[1] + cur[1], c[2] + cur[0], c[3] + cur[1], c[4] + cur[0], c[5] + cur[1]]
+            pts += bez(cur, (c[0], c[1]), (c[2], c[3]), (c[4], c[5]), 12)[1:]
+            cur = (c[4], c[5])
+        elif cmd == "A":
+            # The flags in "0 0016 8" run together: radius, radius, rotation, then "0016" = 0, 0, 16.
+            r = num(); num(); num()
+            flags = toks[i]; i += 1
+            if len(flags) > 2 and "." not in flags:
+                end = (float(flags[2:]), num())
+            else:
+                end = (num(), num())
+            # A short arc of the mark's circle (centre 8,8) from the current point to `end`.
+            a0 = math.atan2(cur[1] - 8, cur[0] - 8); a1 = math.atan2(end[1] - 8, end[0] - 8)
+            if a1 > a0:
+                a1 -= 2 * math.pi
+            for k in range(1, 13):
+                a = a0 + (a1 - a0) * k / 12
+                pts.append((8 + 8 * math.cos(a), 8 + 8 * math.sin(a)))
+            cur = end
+        else:
+            i += 1
+    return pts
+
+
+@icon("github")
+def _(g):
+    k, o = 7.4, 4.8
+    g.poly([(o + x * k, o + y * k) for x, y in _svg_points(GITHUB_MARK)])
+
+
 ORDER = list(ICONS.keys())
 
 
