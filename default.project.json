@@ -1,0 +1,43 @@
+{
+  "name": "SeaBattle",
+  "globIgnorePaths": ["**/*.py", "**/.DS_Store", "**/__pycache__/**"],
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "$ignoreUnknownInstances": true,
+      "SeaBattle": {
+        "$path": "src/shared",
+        "$ignoreUnknownInstances": true,
+        "Sim": {
+          "$path": "src/sim",
+          "$ignoreUnknownInstances": true
+        }
+      }
+    },
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "$path": "src/server",
+      "$ignoreUnknownInstances": true
+    },
+    "ReplicatedFirst": {
+      "$className": "ReplicatedFirst",
+      "$path": "src/first",
+      "$ignoreUnknownInstances": true
+    },
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "$ignoreUnknownInstances": true,
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "$path": "src/client",
+        "$ignoreUnknownInstances": true
+      }
+    },
+    "ServerStorage": {
+      "$className": "ServerStorage",
+      "$path": "tests",
+      "$ignoreUnknownInstances": true
+    }
+  }
+}
