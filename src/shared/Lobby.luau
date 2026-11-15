@@ -84,6 +84,8 @@ local function wallet(parent,z)
  return {pill=pill,text=text,width=70}
 end
 
+local FOOTER='© OpenFront and Contributors  •  Music: APM Music  •  GNU AGPL v3, no warranty: see How to play'
+local FOOTER_SHORT='© OpenFront and Contributors • Music: APM Music • AGPL v3, no warranty: see Help'
 function L.new(view)
  local self=setmetatable({v=view,mode='menu',page='home',clock=0,shownPhase=nil,difficulty=nil},L)
  local gui=view.gui
@@ -109,6 +111,11 @@ function L.new(view)
   make('ImageLabel',self.word,{Name='Logo',BackgroundTransparency=1,ImageContent=logo,ScaleType=Enum.ScaleType.Fit,Size=UDim2.fromScale(1,1),ZIndex=42})
   self.title.Visible=false;self.tag.Visible=false
  end
+ -- Footer (2026-11-15, by the author's request): the AGPL notice, quiet and half-transparent at the bottom;
+ -- the full credits and licence are on the last card of "How to play".
+ self.footer=label(self.root,FOOTER,12,Enum.FontWeight.Medium,C.muted,
+  {Name='Footer',AnchorPoint=Vector2.new(.5,1),TextXAlignment=Enum.TextXAlignment.Center,TextTransparency=.45,TextWrapped=false,TextScaled=true,ZIndex=41})
+ make('UITextSizeConstraint',self.footer,{MaxTextSize=12,MinTextSize=7})
  -- The card, with two pages: home (Solo / Online) and solo (difficulty and start).
  self.card=corner(make('Frame',self.root,{BackgroundColor3=C.card,BackgroundTransparency=.04,ZIndex=41}),18)
  stroke(self.card,C.white,.86,1)
@@ -569,6 +576,7 @@ function L:layout(size)
  self.card.Visible=not self.phone;self.strip.Visible=self.phone
  self.party:layout(size,inset,self.phone)
  if self.phone then self:layoutPhone(size,inset);return end
+ self.footer.Text=FOOTER;self.footer.Position=UDim2.new(.5,0,1,-8);self.footer.Size=UDim2.new(1,-32,0,14)
  self.stripNote.Visible=false;self.stripWallet.pill.Visible=false
  -- Side by side on a big screen.
  local wide=size.X>=900 and not short
@@ -654,6 +662,8 @@ function L:layoutPhone(size,inset)
  local pw=self.stripWallet.width
  self.stripNote.Position=UDim2.new(.5,0,1,-10-stripH-6);self.stripNote.Size=UDim2.fromOffset(w-16-(pw+10)*2,noteH)
  self.stripWallet.pill.Visible=true;self.stripWallet.pill.Position=UDim2.new(.5,math.floor(w/2),1,-10-stripH-6)
+ -- the footer: one small line in the gap under the strip
+ self.footer.Text=FOOTER_SHORT;self.footer.Position=UDim2.new(.5,0,1,-1);self.footer.Size=UDim2.new(1,-16,0,9)
  -- The logo (or the text title) centred at the top: large, up to 70% of the free height (260 points).
  -- The note's line is always counted, shown or not, so the logo keeps one size on every page.
  local free=size.Y-(stripH+16+34)-16
