@@ -1,3 +1,4 @@
+--!native
 --!nonstrict
 -- Water-front conquest. OpenFront-derived economy is installed below; attacks retain explicit target consent.
 local shared=game.ReplicatedStorage.SeaBattle
@@ -58,8 +59,18 @@ function Game.new(grid,seed)
  self:reset(seed);return self
 end
 function Game:owner(id)return buffer.readu8(self.cells,id-1)end
+-- (The front's inner loops below read neighbours through grid:nb4 and owners straight from the cell
+-- buffer, without the per-call tables of neighborIds / getCell: 2026-11-15, a solo match was more
+-- than an iPhone 7 could step in real time. Same cells in the same order, so matches play the same.)
 function Game:adjacent(id,owner)
- for _,n in ipairs(self.grid:neighborIds(id))do if self:owner(n)==owner then return true end end
+ local cells=self.cells;local a,b,c,d=self.grid:nb4(id)
+ return(a>0 and buffer.readu8(cells,a-1)==owner)or(b>0 and buffer.readu8(cells,b-1)==owner)
+  or(c>0 and buffer.readu8(cells,c-1)==owner)or(d>0 and buffer.readu8(cells,d-1)==owner)
+end
+-- Whether `who` (an owner id, 0 = nobody) has a running attack, whose queue follows the boundary.
+local function attacking(self,who)
+ local f=who>0 and self.factions[who];local o=f and f.orders
+ if o then for _,order in pairs(o)do if order.attackOwner>0 then return true end end end
  return false
 end
 function Game:colorFor(port)
@@ -111,18 +122,36 @@ function Game:_assign(id,owner)
   local f=self.factions[owner];f.owned[id]=true;f.count+=1;f.alive=true;f.frontier[id]=nil
  end
  local touchesLand=false
- for _,n in ipairs(self.grid:neighborIds(id))do
-  if not self.grid:isWater(n)then touchesLand=true end
-  local no=self:owner(n)
+ local grid=self.grid;local mask,cellsBuf=grid.waterMask,self.cells
+ local n1,n2,n3,n4=grid:nb4(id)
+ for k=1,4 do
+  local n=k==1 and n1 or k==2 and n2 or k==3 and n3 or n4
+  if n==0 then continue end
+  local water=buffer.readu8(mask,n-1)==1
+  if not water then touchesLand=true end
+  local no=buffer.readu8(cellsBuf,n-1)
   if no>0 and no~=owner then self.factions[no].frontier[id]=true end
-  if owner>0 and no~=owner and self.grid:isWater(n)then self.factions[owner].frontier[n]=true end
-  if old>0 and no~=old and self.grid:isWater(n)then self.factions[old].frontier[n]=true end
+  if owner>0 and no~=owner and water then self.factions[owner].frontier[n]=true end
+  if old>0 and no~=old and water then self.factions[old].frontier[n]=true end
  end
  if owner>0 and touchesLand then local f=self.factions[owner];f.shore=f.shore or {};f.shore[id]=true end
- -- Keep combat queues tied to the current boundary, not an old expansion wave.
+ -- Keep combat queues tied to the current boundary, not an old expansion wave. (Only when someone
+ -- around has an attack running: most captures are plain expansion and need none of this.)
+ local queues=false
  if not self.resetting then
+  queues=attacking(self,old)or attacking(self,owner)
+  for k=1,4 do
+   if queues then break end
+   local n=k==1 and n1 or k==2 and n2 or k==3 and n3 or n4
+   if n>0 then queues=attacking(self,buffer.readu8(cellsBuf,n-1))end
+  end
+ end
+ if queues then
   local affected={[old]=true,[owner]=true};local cells={id}
-  for _,n in ipairs(self.grid:neighborIds(id))do affected[self:owner(n)]=true;table.insert(cells,n)end
+  for k=1,4 do
+   local n=k==1 and n1 or k==2 and n2 or k==3 and n3 or n4
+   if n>0 then affected[buffer.readu8(cellsBuf,n-1)]=true;table.insert(cells,n)end
+  end
   for who in pairs(affected)do
    local f=who>0 and self.factions[who]
    if f then for _,order in pairs(Game.ordersOf(f))do
@@ -130,7 +159,8 @@ function Game:_assign(id,owner)
    end end
   end
  end
- self.revision+=1;table.insert(self.dirty,{id,owner})
+ -- (dirty is flat: cell, owner, cell, owner, ...)
+ self.revision+=1;local dirty=self.dirty;local n=#dirty;dirty[n+1]=id;dirty[n+2]=owner
  if self.onOwnership and not self.resetting then self:onOwnership(id,old,owner)end
 end
 function Game:_seed(port,owner)
@@ -206,13 +236,14 @@ end
 function Game:thin(id,owner)
  local w,h=self.grid.width,self.grid.height
  local x,y=(id-1)%w,(id-1)//w
- local function own(dx,dy)
-  local nx,ny=x+dx,y+dy
-  return nx>=0 and nx<w and ny>=0 and ny<h and self:owner(ny*w+nx+1)==owner
- end
- for _,q in ipairs({{-1,-1},{1,-1},{-1,1},{1,1}})do
-  if own(q[1],0)and own(0,q[2])and own(q[1],q[2])then return false end
- end
+ local cells=self.cells
+ -- owned(dx,dy) for the eight cells around, read once (false off the map)
+ local function at(nx,ny)return nx>=0 and nx<w and ny>=0 and ny<h and buffer.readu8(cells,ny*w+nx)==owner end
+ local left,right,up,down=at(x-1,y),at(x+1,y),at(x,y-1),at(x,y+1)
+ if left and up and at(x-1,y-1)then return false end
+ if right and up and at(x+1,y-1)then return false end
+ if left and down and at(x-1,y+1)then return false end
+ if right and down and at(x+1,y+1)then return false end
  return true
 end
 -- A strip swept away or a cell taken by force (set aside because it splits the defender) can cut the
@@ -220,37 +251,54 @@ end
 -- pixel pocket is left behind. A part that keeps growing past PocketLimit counts as a main body.
 function Game:takePockets(f,order,cells,defender)
  local limit=R.PocketLimit;local parts={};local seen={}
- for _,from in ipairs(cells)do for _,start in ipairs(self.grid:neighborIds(from))do
-  if self:owner(start)==defender and not seen[start]then
-   local part={start};seen[start]=true;local head=1
-   while head<=#part and #part<=limit do
-    if head%64==0 then Coop.check()end
-    local id=part[head];head+=1
-    for _,n in ipairs(self.grid:neighborIds(id))do if not seen[n]and self:owner(n)==defender then seen[n]=true;table.insert(part,n)end end
+ local grid,buf=self.grid,self.cells
+ for _,from in ipairs(cells)do
+  local s1,s2,s3,s4=grid:nb4(from)
+  for j=1,4 do
+   local start=j==1 and s1 or j==2 and s2 or j==3 and s3 or s4
+   if start>0 and buffer.readu8(buf,start-1)==defender and not seen[start]then
+    local part={start};seen[start]=true;local head=1
+    while head<=#part and #part<=limit do
+     if head%64==0 then Coop.check()end
+     local id=part[head];head+=1
+     local n1,n2,n3,n4=grid:nb4(id)
+     for k=1,4 do
+      local n=k==1 and n1 or k==2 and n2 or k==3 and n3 or n4
+      if n>0 and not seen[n]and buffer.readu8(buf,n-1)==defender then seen[n]=true;table.insert(part,n)end
+     end
+    end
+    part.big=#part>limit;table.insert(parts,part)
    end
-   part.big=#part>limit;table.insert(parts,part)
   end
- end end
+ end
  if #parts<2 then return end
  table.sort(parts,function(a,b)if a.big~=b.big then return a.big end;return #a>#b end)
  for k=2,#parts do local part=parts[k]
   if not part.big then for _,id in ipairs(part)do if self:canEnter(f.id,id,order)then self:_assign(id,f.id)end end end
  end
 end
-function Game:nearLand(id)
- local c=self.grid:getCell(id)
- for y=c.y-1,c.y+1 do for x=c.x-1,c.x+1 do local near=self.grid:cell(x,y);if near and not near.water then return true end end end
+-- Land among the eight cells around (and the cell itself); off the map counts as nothing.
+local function landAround(grid,id)
+ local w,h,mask=grid.width,grid.height,grid.waterMask
+ local cx,cy=(id-1)%w,(id-1)//w
+ for y=math.max(0,cy-1),math.min(h-1,cy+1)do
+  for x=math.max(0,cx-1),math.min(w-1,cx+1)do if buffer.readu8(mask,y*w+x)==0 then return true end end
+ end
  return false
 end
+function Game:nearLand(id)return landAround(self.grid,id)end
 -- One-pixel strips of the defender touching a fresh capture fall at once, without a fight, and the
 -- sweep runs on along the strip: the deferred-cell path would take such a line a cell per tick.
 function Game:takeThin(f,order,from)
  local defender=order.attackOwner;local queue={from};local head=1
+ local grid,buf=self.grid,self.cells
  while head<=#queue and #queue<=R.ThinSweepLimit do
   local id=queue[head];head+=1
-  for _,n in ipairs(self.grid:neighborIds(id))do
+  local n1,n2,n3,n4=grid:nb4(id)
+  for k=1,4 do
+   local n=k==1 and n1 or k==2 and n2 or k==3 and n3 or n4
    -- Only strips on open water: a river or a strait between shores is fought for pixel by pixel.
-   if self:owner(n)==defender and self:canEnter(f.id,n,order)and self:thin(n,defender)and not self:nearLand(n)then
+   if n>0 and buffer.readu8(buf,n-1)==defender and self:canEnter(f.id,n,order)and self:thin(n,defender)and not landAround(grid,n)then
     self:_assign(n,f.id);table.insert(queue,n)
    end
   end
@@ -262,20 +310,27 @@ function Game.ordersOf(f)
  local o=f.orders;if not o then o={};f.orders=o end;return o
 end
 function Game:canEnter(owner,id,order)
- local current=self:owner(id)
- if current==owner or not self.grid:isWater(id)then return false end
+ local current=buffer.readu8(self.cells,id-1)
+ if current==owner or buffer.readu8(self.grid.waterMask,id-1)==0 then return false end
  -- Neutral expansion and a targeted attack are mutually exclusive orders.
  -- Recheck on execution too: a queued enemy cell that becomes neutral is skipped.
  return order~=nil and current==(order.attackOwner or 0)
 end
 function Game:_enqueue(f,order,id,cost,origin)
  local previous=order.seen[id]
- if not self:canEnter(f.id,id,order)or not self:adjacent(id,f.id)then
+ -- support: own neighbours (none = not adjacent)
+ local support=0
+ if self:canEnter(f.id,id,order)then
+  local buf,me=self.cells,f.id;local a,b,c,d=self.grid:nb4(id)
+  if a>0 and buffer.readu8(buf,a-1)==me then support+=1 end
+  if b>0 and buffer.readu8(buf,b-1)==me then support+=1 end
+  if c>0 and buffer.readu8(buf,c-1)==me then support+=1 end
+  if d>0 and buffer.readu8(buf,d-1)==me then support+=1 end
+ end
+ if support==0 then
   if previous then order.seen[id]=nil;order.border=math.max(0,(order.border or 1)-1)end
   return
  end
- local support=0
- for _,n in ipairs(self.grid:neighborIds(id))do if self:owner(n)==f.id then support+=1 end end
  local combat=order.attackOwner>0
  if previous and(not combat or previous.support==support)then return end
  origin=origin or id
@@ -306,22 +361,28 @@ end
 -- local-ring check; ambiguous open-water necks use bounded reachability.
 -- Rivers and shores may legitimately split a country when their narrow channel is captured.
 function Game:preservesFront(id,owner)
- local cell=self.grid:getCell(id)
- for y=cell.y-1,cell.y+1 do for x=cell.x-1,cell.x+1 do
-  local near=self.grid:cell(x,y)
-  if near and not near.water then return true end
- end end
- local neighbors={};for _,n in ipairs(self.grid:neighborIds(id))do if self:owner(n)==owner then table.insert(neighbors,n)end end
+ local grid,buf=self.grid,self.cells
+ if landAround(grid,id)then return true end
+ local neighbors={}
+ do
+  local a,b,c,d=grid:nb4(id)
+  for k=1,4 do
+   local n=k==1 and a or k==2 and b or k==3 and c or d
+   if n>0 and buffer.readu8(buf,n-1)==owner then table.insert(neighbors,n)end
+  end
+ end
  if #neighbors<2 then return true end
- local c=self.grid:getCell(id)
+ local w=grid.width;local cx,cy=(id-1)%w,(id-1)//w
  local function connected(limit,localOnly)
   local seen={[id]=true,[neighbors[1]]=true};local q={neighbors[1]};local head,found=1,1
   local needed={};for i=2,#neighbors do needed[neighbors[i]]=true end
   while head<=#q and head<=limit do
    local cell=q[head];head+=1
-   for _,n in ipairs(self.grid:neighborIds(cell))do if not seen[n]and self:owner(n)==owner then
-    local p=self.grid:getCell(n)
-    if not localOnly or(math.abs(c.x-p.x)<=1 and math.abs(c.y-p.y)<=1)then
+   local n1,n2,n3,n4=grid:nb4(cell)
+   for k=1,4 do
+    local n=k==1 and n1 or k==2 and n2 or k==3 and n3 or n4
+    if n>0 and not seen[n]and buffer.readu8(buf,n-1)==owner then
+    if not localOnly or(math.abs(cx-(n-1)%w)<=1 and math.abs(cy-(n-1)//w)<=1)then
      seen[n]=true;table.insert(q,n)
      if needed[n]then found+=1;if found==#neighbors then return true end end
     end
@@ -447,7 +508,11 @@ function Game:advance(f,order,dt)
   if victim and victim.alive and victim.count<R.AnnexBelow and(victim.bot or order.fleet>victim.fleet)then
    self:annex(old,f.id);self:stop(f.id,false,'target_defeated',enemy);break
   end
-  for _,n in ipairs(self.grid:neighborIds(node.id))do self:_enqueue(f,order,n,node.cost+1,node.origin)end
+  local n1,n2,n3,n4=self.grid:nb4(node.id)
+  if n1>0 then self:_enqueue(f,order,n1,node.cost+1,node.origin)end
+  if n2>0 then self:_enqueue(f,order,n2,node.cost+1,node.origin)end
+  if n3>0 then self:_enqueue(f,order,n3,node.cost+1,node.origin)end
+  if n4>0 then self:_enqueue(f,order,n4,node.cost+1,node.origin)end
  end
  if f.orders[enemy]==order and #order.heap==0 and order.deferred then
   local deferred=order.deferred;order.deferred=nil

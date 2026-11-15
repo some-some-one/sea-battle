@@ -360,20 +360,26 @@ function View:pixelColor(id)
   if c.pattern then local tint=fill:Lerp(Color3.new(1,1,1),.2);c[7],c[8],c[9]=math.floor(tint.R*255),math.floor(tint.G*255),math.floor(tint.B*255)end
   self.pixelColors[o]=c
  end
- local grid=self.grid;local w=grid.width;local x,y=(id-1)%w,(id-1)//w
+ local grid=self.grid;local w,h=grid.width,grid.height;local x,y=(id-1)%w,(id-1)//w
+ local owners,mask,hot=self.owners,grid.waterMask,self.hot
+ -- The neighbour that makes this an outline cell: another owner's (or nobody's) water; a front
+ -- with that owner wins. (Written out without a helper closure: this runs for every repainted cell.)
  local other
- local function check(n)
-  local no=buffer.readu8(self.owners,n-1)
-  if no~=o and grid:isWater(n)then if not other or(no>0 and self.hot[pairKey(o,no)])then other=no end end
+ for k=1,8 do
+  -- the four sides, then (only for the hovered country without an outline yet) the diagonals
+  if k==5 and(other or o~=self.hoverOwner)then break end
+  local n
+  if k==1 then n=x>0 and id-1 elseif k==2 then n=x<w-1 and id+1 elseif k==3 then n=y>0 and id-w elseif k==4 then n=y<h-1 and id+w
+  elseif k==5 then n=x>0 and y>0 and id-w-1 elseif k==6 then n=x<w-1 and y>0 and id-w+1
+  elseif k==7 then n=x>0 and y<h-1 and id+w-1 else n=x<w-1 and y<h-1 and id+w+1 end
+  if n then
+   local no=buffer.readu8(owners,n-1)
+   if no~=o and buffer.readu8(mask,n-1)==1 and(not other or(no>0 and hot[pairKey(o,no)]))then other=no end
+  end
  end
- if x>0 then check(id-1)end;if x<w-1 then check(id+1)end;if y>0 then check(id-w)end;if y<grid.height-1 then check(id+w)end
  -- The hovered country: its outline brighter and one cell thicker (the diagonals too), and
  -- for a country of moderate size its fill brighter as well.
  local hl=o==self.hoverOwner
- if hl and not other then
-  if x>0 and y>0 then check(id-w-1)end;if x<w-1 and y>0 then check(id-w+1)end
-  if x>0 and y<grid.height-1 then check(id+w-1)end;if x<w-1 and y<grid.height-1 then check(id+w+1)end
- end
  if not other then
   if hl and self.hoverFill then return brighten(c[1],HOVER_FILL),brighten(c[2],HOVER_FILL),brighten(c[3],HOVER_FILL),255 end
   local pt=c.pattern
@@ -409,7 +415,9 @@ function View:setCell(id,owner)
  if old>0 and self.owned[old]then self.owned[old][id]=nil end
  buffer.writeu8(self.owners,id-1,owner)
  if owner>0 then self.owned[owner]=self.owned[owner]or {};self.owned[owner][id]=true end
- self:mark(id);for _,n in ipairs(self.grid:neighborIds(id))do self:mark(n)end
+ self:mark(id)
+ local a,b,c,d=self.grid:nb4(id)
+ if a>0 then self:mark(a)end;if b>0 then self:mark(b)end;if c>0 then self:mark(c)end;if d>0 then self:mark(d)end
  self.labelsDirty=true
 end
 function View:renderChunk(key,location)
@@ -598,7 +606,7 @@ function View:receive(delta)
   self:applyRoster(s.roster);self:applyRows(s.rows);self:applyBattle(s)
   self.owners=s.cellOwners;self.owned={};self.anchors={};self.pending={};self.pendingHead=1
   for i=1,Rules.MaxParticipants do self.owned[i]={}end
-  for _,name in pairs(self.countryLabels)do name.Visible=false end
+  for _,name in pairs(self.countryLabels)do name.Visible=false end;self.nameState=nil
   if self.image then self.image:clear();self.pixelColors={};self.colorKeys={}
   else self.root:ClearAllChildren()end
   self.chunks={};self.dirty={};self.dirtyQueue={};self.dirtyHead=1
@@ -622,16 +630,27 @@ function View:receive(delta)
   self:applyBattle(delta)
   if delta.roster then self:applyRoster(delta.roster)end
   if delta.rows then self:applyRows(delta.rows)end
-  local cells=Protocol.decodeCells(delta.cells);local now=os.clock()
+  -- (read straight from the packed buffer: a table per cell was thousands of tables a second)
+  local packed=delta.cells;local now=os.clock();local count=0;local listed
+  if typeof(packed)=='buffer'then count=buffer.len(packed)//Protocol.CellBytes
+  elseif type(packed)=='table'then listed=packed;count=#packed end
   -- New cells are laid out over the time until the next message is due (the measured gap between
   -- messages), so the fill moves on evenly instead of jumping when a message lands and then standing still.
-  if #cells>0 then
+  if count>0 then
    local gap=self.lastCellsAt and math.clamp(now-self.lastCellsAt,.05,.5)or .1
    self.cellGap=(self.cellGap or gap)+(gap-(self.cellGap or gap))*.3;self.lastCellsAt=now
    -- Cells still waiting from the previous message go first: the new ones start after them.
-   local from=math.max(now,(self.pending[#self.pending]and self.pending[#self.pending].at)or now)
+   -- (pending is flat: cell, owner, time for each waiting cell)
+   local p=self.pending;local n=#p
+   local from=math.max(now,n>=self.pendingHead and p[n]or now)
    local span=math.max(.05,self.cellGap*.95-(from-now))
-   for i,c in ipairs(cells)do table.insert(self.pending,{cell=c[1],owner=c[2],at=from+(i-1)/#cells*span})end
+   local B=Protocol.CellBytes
+   for i=1,count do
+    local cell,owner
+    if listed then cell,owner=listed[i][1],listed[i][2]
+    else cell,owner=buffer.readu32(packed,(i-1)*B),buffer.readu8(packed,(i-1)*B+4)end
+    p[n+1]=cell;p[n+2]=owner;p[n+3]=from+(i-1)/count*span;n+=3
+   end
   end
   if #self.factions~=self.lastFactionCount then self:createCountryLabels()end
   self.lastFactionCount=#self.factions
@@ -978,10 +997,11 @@ function View:update(camera,zoom,dt)
  end
  self.clock+=dt
  local now=os.clock()
- while self.pendingHead<=#self.pending and self.pending[self.pendingHead].at<=now do
-  local p=self.pending[self.pendingHead];self.pendingHead+=1;self:setCell(p.cell,p.owner)
+ local pending=self.pending
+ while self.pendingHead<=#pending and pending[self.pendingHead+2]<=now do
+  local head=self.pendingHead;self.pendingHead+=3;self:setCell(pending[head],pending[head+1])
  end
- if self.pendingHead>#self.pending then self.pending={};self.pendingHead=1 end
+ if self.pendingHead>#pending then table.clear(pending);self.pendingHead=1 end
  local pixelWorld=2*camera.CFrame.Position.Y*math.tan(math.rad(camera.FieldOfView/2))/math.max(1,camera.ViewportSize.Y)
  self.pixelWorld=pixelWorld
  local thickness=math.clamp(pixelWorld, .018,.12)
@@ -1040,7 +1060,10 @@ end
 -- Country names: size by area, hide where they would cover panels or larger neighbours.
 function View:placeNames(camera,pixelWorld)
  -- Behind the lobby and the start banner the map shows no country names.
- if self.lobbyCovered then for _,obj in pairs(self.countryLabels)do obj.Visible=false end;return end
+ if self.lobbyCovered then
+  for _,obj in pairs(self.countryLabels)do obj.Visible=false;local st=self.nameState and self.nameState[obj];if st then st.visible=false end end
+  return
+ end
  -- Larger countries claim label space first; labels never cover panels or each other.
  local origin=self.marks.AbsolutePosition;local blocked={}
  for _,c in ipairs(self.gui:GetChildren())do
@@ -1052,49 +1075,66 @@ function View:placeNames(camera,pixelWorld)
  -- Which country belongs to which person (UserId), for the avatars.
  local users={}
  for user,id in pairs(self.battle and self.battle.clients or {})do if tonumber(user)then users[id]=tonumber(user)end end
+ -- Each label remembers what it was given (self.nameState) and Roblox is written only what changed;
+ -- the text's measured size is read again only after the text or its size changed. (2026-11-15: an
+ -- online match has eighty labels, many with avatars and flags, and every refresh re-set and re-read
+ -- all of them: a 7 ms frame twice a second on a computer, several times that on a phone.)
+ local states=self.nameState;if not states then states=setmetatable({},{__mode='k'});self.nameState=states end
+ local function show(st,obj,on)if st.visible~=on then st.visible=on;obj.Visible=on end end
+ local now=os.clock()
  for id,obj in pairs(self.countryLabels)do
+  local st=states[obj];if not st then st={};states[obj]=st end
   local a=self.anchors[id];local f=self.factions[id]
-  if not a or not f or f.count==0 then obj.Visible=false;continue end
+  if not a or not f or f.count==0 then show(st,obj,false);continue end
   local c=self.grid:getCell(a.cell);local pos=self.grid:cellToWorld(c.x,c.y)
   local p,visible=camera:WorldToScreenPoint(pos)
   local width=math.min(a.width*.9,math.sqrt(a.area)*1.7)*self.grid.data.tileSize/pixelWorld
   local fontsize=math.clamp(width/math.max(4,utf8.len(f.name)*.58),8,30)
-  obj.Visible=visible and width>=26
-  if not obj.Visible then continue end
-  -- Only touch properties that changed: every text change makes the engine lay the label out again.
+  if not(visible and width>=26)then show(st,obj,false);continue end
   local text=f.name.."\nFleet "..compact(f.fleet or 0);fontsize=math.floor(fontsize+.5)
-  if obj.Text~=text then obj.Text=text end;if obj.TextSize~=fontsize then obj.TextSize=fontsize end
+  if st.text~=text then st.text=text;obj.Text=text;st.bounds=nil end
+  if st.fontsize~=fontsize then st.fontsize=fontsize;obj.TextSize=fontsize;st.bounds=nil end
   local size=UDim2.fromOffset(math.floor(math.max(width,fontsize*utf8.len(f.name)*.65)),math.floor(fontsize*2.8))
-  if obj.Size~=size then obj.Size=size end
-  obj.Position=UDim2.fromOffset(p.X,p.Y)
+  if st.size~=size then st.size=size;obj.Size=size;st.bounds=nil end
+  local at=UDim2.fromOffset(math.floor(p.X+.5),math.floor(p.Y+.5))
+  if st.at~=at then st.at=at;obj.Position=at end
   -- Rendered text can be wider than the label frame (the fleet line), so measure the text itself.
-  local bounds=obj.TextBounds;local face=obj:FindFirstChild("Avatar");local extra=0
+  local bounds=st.bounds;if not bounds then bounds=obj.TextBounds;st.bounds=bounds end
+  if st.face==nil then st.face=obj:FindFirstChild("Avatar")or false;st.flag=obj:FindFirstChild("Flag")or false end
+  local face,extra=st.face,0
   if face then
-   local user=users[id];local shown=user~=nil or f.persona==true;face.Visible=shown
+   local user=users[id];local shown=user~=nil or f.persona==true
+   if st.faceShown~=shown then st.faceShown=shown;face.Visible=shown end
    if shown then
-    showAvatar(face,user,f.persona,f.look)
+    -- (the avatar is looked at again when its owner changes, and every 3 s for a generated one)
+    local who=tostring(user)..':'..tostring(f.persona)..':'..tostring(f.look)
+    if st.faceFor~=who or now-(st.faceAt or 0)>3 then st.faceFor=who;st.faceAt=now;showAvatar(face,user,f.persona,f.look)end
     -- As tall as the name, just before it on the name's line (the top one of the two).
     local side=fontsize+2;local nameWidth=self:textWidth(f.name,fontsize);extra=side+3
-    face.Size=UDim2.fromOffset(side,side);face.Position=UDim2.new(.5,-math.floor(nameWidth/2)-3,.5,-math.floor(bounds.Y/4))
+    local fs,fp=UDim2.fromOffset(side,side),UDim2.new(.5,-math.floor(nameWidth/2)-3,.5,-math.floor(bounds.Y/4))
+    if st.faceSize~=fs then st.faceSize=fs;face.Size=fs end
+    if st.facePos~=fp then st.facePos=fp;face.Position=fp end
    end
   end
-  local flag=obj:FindFirstChild("Flag")
+  local flag=st.flag
   if flag then
-   Flags.set(flag,f.flag)
-   if flag.Visible then
+   if st.flagId~=f.flag then st.flagId=f.flag;Flags.set(flag,f.flag);st.flagShown=flag.Visible end
+   if st.flagShown then
     local fh=math.max(8,math.floor(fontsize*.8));local fw=math.floor(fh*Flags.Aspect+.5);local nameWidth=self:textWidth(f.name,fontsize)
-    flag.Size=UDim2.fromOffset(fw,fh);flag.Position=UDim2.new(.5,math.floor(nameWidth/2)+4,.5,-math.floor(bounds.Y/4))
+    local gs,gp=UDim2.fromOffset(fw,fh),UDim2.new(.5,math.floor(nameWidth/2)+4,.5,-math.floor(bounds.Y/4))
+    if st.flagSize~=gs then st.flagSize=gs;flag.Size=gs end
+    if st.flagPos~=gp then st.flagPos=gp;flag.Position=gp end
     extra=math.max(extra,fw+4)
    end
   end
   -- The avatar sits left of the text: the label's box grows by it on both sides (it stays centred).
-  table.insert(candidates,{obj=obj,area=a.area,x=p.X,y=p.Y,w=math.max(bounds.X,fontsize*2)+6+extra*2,h=math.max(bounds.Y,fontsize*2.2)})
+  table.insert(candidates,{obj=obj,st=st,area=a.area,x=p.X,y=p.Y,w=math.max(bounds.X,fontsize*2)+6+extra*2,h=math.max(bounds.Y,fontsize*2.2)})
  end
  table.sort(candidates,function(a,b)return a.area>b.area end)
  for _,c in ipairs(candidates)do
   local box={c.x-c.w/2,c.y-c.h/2,c.x+c.w/2,c.y+c.h/2};local free=true
   for _,o in ipairs(blocked)do if box[1]<o[3]and box[3]>o[1]and box[2]<o[4]and box[4]>o[2]then free=false;break end end
-  c.obj.Visible=free;if free then table.insert(blocked,box)end
+  show(c.st,c.obj,free);if free then table.insert(blocked,box)end
  end
 
 end

@@ -309,7 +309,6 @@ function CB:update(f,prices)
   end
  end
  if self.tipFor and self.tip.Visible and self.tipFor~="Shop"then local p=prices[self.tipFor];self.tipPrice.Text=p and(compact(p).." gold")or ""end
- self:animateShop()
 end
 function CB:setActive(key)self.active=key end
 -- Show or hide a tile (arsenal tiles appear once opened); the bar is laid out again.
@@ -327,6 +326,12 @@ end
 function CB:layout(size,small,shown)
  -- Tiles shown now; the bar is as wide as they need, and they narrow when the screen is not.
  local n=0;for _,slot in ipairs(self.cfg.slots)do if not(self.hidden and self.hidden[slot.key])then n+=1 end end
+ if not shown then self.tray.Visible=false;self.tip.Visible=false;self.hint.Visible=false end
+ -- Laid out again only when something it depends on changed (it ran every frame, writing dozens of
+ -- sizes and positions that stayed the same).
+ local key=size.X..'x'..size.Y..(small and 's'or '')..(shown and 'v'or '')..n..(self.tray.Visible and 't'or '')
+ if key==self.laidOut then return end
+ self.laidOut=key
  local tw=54
  -- (the shop tile closes the row: 74 wide)
  local wideW=492+n*(tw+6)+80

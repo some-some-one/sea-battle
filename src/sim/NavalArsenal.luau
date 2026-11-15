@@ -1,3 +1,4 @@
+--!native
 --!nonstrict
 -- The arsenal in a match (shared/Catalog: things a player opens for silver; Robux only opens them
 -- sooner). Our own rules, the same on the server and in a solo match on the device:

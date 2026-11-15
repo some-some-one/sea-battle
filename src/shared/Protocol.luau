@@ -1,3 +1,4 @@
+--!native
 --!nonstrict
 -- Compact network rows shared by the server sync loop and the client view.
 -- Rows are positional arrays; nil is sent as false because remotes drop array holes.

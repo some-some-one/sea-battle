@@ -12,7 +12,9 @@ local Coop={}
 local current=nil
 local deadline=0
 -- Work between two yields of a route search: a frame's share on a client, more on a server.
-Coop.SLICE=RunService:IsClient()and .004 or .015
+-- (2.5 ms since 2026-11-15: these threads run beside the match step's own budget, several at once in
+-- a late solo match, and 4 ms each was more than an old phone's frame could spare)
+Coop.SLICE=RunService:IsClient()and .0025 or .015
 -- Loading (the grid, a new match): bigger slices — each yield waits a whole frame, and hundreds of small
 -- ones made the start several times slower than the work itself.
 Coop.LOAD_SLICE=RunService:IsClient()and .012 or .05

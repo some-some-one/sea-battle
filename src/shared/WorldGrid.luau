@@ -1,3 +1,4 @@
+--!native
 --!nonstrict
 -- Geography uses compact buffers; cell records are materialized only on demand.
 local Coop=require(script.Parent.Coop)
@@ -26,6 +27,16 @@ function Grid.new(data,options)
  local yieldWork=not options or options.yieldWork~=false
  local self=setmetatable({data=data,width=data.width,height=data.height,count=data.width*data.height,regions={},basins={}},Grid)
  self.paletteIds=decode(data.rows,self.width,self.height,1,yieldWork)
+ -- Water as one byte per cell (1 = water): isWater is the hottest question the match asks, millions of
+ -- times a minute, and a palette lookup each time was a measurable share of a phone's frame.
+ self.waterMask=buffer.create(self.count)
+ do
+  local palette,ids,mask=data.palette,self.paletteIds,self.waterMask;local pace={t=os.clock()}
+  for i=0,self.count-1 do
+   local p=palette[buffer.readu8(ids,i)];if p and p.water then buffer.writeu8(mask,i,1) end
+   if yieldWork and i%65536==0 then Coop.loadPace(pace) end
+  end
+ end
  if data.regionRows then
   self.regionIds=decode(data.regionRows,self.width,self.height,4,yieldWork)
   self.basinIds=decode(data.basinRows,self.width,self.height,4,yieldWork)
@@ -89,7 +100,19 @@ end
 function Grid:paletteId(id) return buffer.readu8(self.paletteIds,id-1) end
 function Grid:regionId(id) return buffer.readu32(self.regionIds,(id-1)*4) end
 function Grid:basinId(id) return buffer.readu32(self.basinIds,(id-1)*4) end
-function Grid:isWater(id) return self.data.palette[self:paletteId(id)].water end
+function Grid:isWater(id) return buffer.readu8(self.waterMask,id-1)==1 end
+-- The four neighbours (left, right, up, down; the order of neighborIds) as four ids, 0 where there is
+-- none: the match's inner loops ask this per captured cell, and a fresh table each time kept a phone's
+-- garbage collector busy.
+function Grid:nb4(id)
+ local w=self.width;local x=(id-1)%w
+ local l,r,u,d=0,0,0,0
+ if x>0 then l=id-1 elseif self.data.wrapX then l=id+w-1 end
+ if x<w-1 then r=id+1 elseif self.data.wrapX then r=id-w+1 end
+ if id>w then u=id-w end
+ if id<=self.count-w then d=id+w end
+ return l,r,u,d
+end
 function Grid:getCell(id)
  if type(id)~="number" or id%1~=0 or id<1 or id>self.count then return nil end
  local pid=self:paletteId(id);local p=self.data.palette[pid]
@@ -101,7 +124,7 @@ function Grid:cell(x,y)
 end
 function Grid:neighborIds(id)
  local x,y=(id-1)%self.width,math.floor((id-1)/self.width)
- local out={}
+ local out=table.create(4)
  if x>0 then table.insert(out,id-1) elseif self.data.wrapX then table.insert(out,id+self.width-1) end
  if x<self.width-1 then table.insert(out,id+1) elseif self.data.wrapX then table.insert(out,id-self.width+1) end
  if y>0 then table.insert(out,id-self.width) end

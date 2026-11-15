@@ -1,3 +1,4 @@
+--!native
 --!nonstrict
 -- Match authority, diplomacy and OpenFront-derived fleet assistance / victory rules.
 local R=require(game.ReplicatedStorage.SeaBattle.NavalRules)

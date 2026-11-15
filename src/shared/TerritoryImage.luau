@@ -7,6 +7,8 @@
 local AssetService=game:GetService("AssetService")
 local T={};T.__index=T
 local TILE=720 -- per side; EditableImage allows up to 1024
+-- Uploads (flush): rows per band, the most pixels one frame sends, and the column step uploads round to.
+local BAND,MAX_PIXELS,ALIGN=16,720*16*4,48
 
 -- colorFor(id) returns r,g,b,a in 0..255. There is no fallback: if the device cannot create the image the
 -- client errors, so a running map is always this image.
@@ -28,7 +30,7 @@ function T.new(grid,parent,colorFor)
   gui.CanvasSize=Vector2.new(tw,th);gui.LightInfluence=1;gui.Brightness=1;gui.Adornee=p;gui.Parent=p
   local label=Instance.new("ImageLabel");label.Size=UDim2.fromScale(1,1);label.BackgroundTransparency=1
   label.ResampleMode=Enum.ResamplerMode.Pixelated;label.ImageContent=Content.fromObject(img);label.Parent=gui
-  table.insert(self.tiles,{x0=x0,y0=y0,w=tw,h=th,img=img,pixels=buffer.create(tw*th*4),low=nil,high=nil})
+  table.insert(self.tiles,{x0=x0,y0=y0,w=tw,h=th,img=img,pixels=buffer.create(tw*th*4),left={},right={},queue={},head=1})
  end end
  self.columns=math.ceil(w/TILE)
  folder.Parent=parent;self.folder=folder
@@ -44,31 +46,51 @@ function T:paint(id)
  local ly=y-t.y0;local o=(ly*t.w+(x-t.x0))*4;local px=t.pixels
  if buffer.readu8(px,o+3)==a and buffer.readu8(px,o)==r and buffer.readu8(px,o+1)==g and buffer.readu8(px,o+2)==b then return end
  buffer.writeu8(px,o,r);buffer.writeu8(px,o+1,g);buffer.writeu8(px,o+2,b);buffer.writeu8(px,o+3,a)
- local lx=x-t.x0
- if not t.low or ly<t.low then t.low=ly end
- if not t.high or ly>t.high then t.high=ly end
- if not t.left or lx<t.left then t.left=lx end
- if not t.right or lx>t.right then t.right=lx end
+ local lx=x-t.x0;local band=ly//BAND
+ local l=t.left[band]
+ if l==nil then t.left[band]=lx;t.right[band]=lx;table.insert(t.queue,band)
+ else if lx<l then t.left[band]=lx end;if lx>t.right[band]then t.right[band]=lx end end
 end
--- Upload the dirty rows of the next tile that has any.
+-- A reusable upload buffer per byte size (widths are rounded up to ALIGN columns, so there are few).
+function T:scratch(bytes)
+ local s=self.buffers and self.buffers[bytes]
+ if not s then self.buffers=self.buffers or {};s=buffer.create(bytes);self.buffers[bytes]=s end
+ return s
+end
+-- Upload changed pixels of the next tile that has any (Roblox shows one EditableImage update a frame).
+-- (2026-11-15: this used to upload the one rectangle around every change in a tile. With eighty
+-- countries growing all over the map that rectangle was most of a 720 × 720 tile, about 2 MB copied
+-- into a fresh buffer and sent every frame, which an old phone could not keep up with. Now the tile
+-- keeps its changes per band of BAND rows, and a frame sends at most MAX_PIXELS of them; the rest
+-- follow in the next frames.)
 function T:flush()
  for _=1,#self.tiles do
   local t=self.tiles[self.next];self.next=self.next%#self.tiles+1
-  if t.low then
-   -- Upload only the changed rectangle, not whole rows: captures touch small areas, and full-width
-   -- uploads of a 720-pixel tile cost a few milliseconds a frame.
-   local rows=t.high-t.low+1;local left,right=t.left or 0,t.right or t.w-1;local cols=right-left+1
-   local slice=buffer.create(rows*cols*4)
-   if cols==t.w then buffer.copy(slice,0,t.pixels,t.low*t.w*4,rows*cols*4)
-   else for r=0,rows-1 do buffer.copy(slice,r*cols*4,t.pixels,((t.low+r)*t.w+left)*4,cols*4)end end
-   t.img:WritePixelsBuffer(Vector2.new(left,t.low),Vector2.new(cols,rows),slice)
-   t.low,t.high,t.left,t.right=nil,nil,nil,nil
+  if t.head<=#t.queue then
+   local sent=0
+   while t.head<=#t.queue and sent<MAX_PIXELS do
+    local band=t.queue[t.head];t.head+=1
+    local left,right=t.left[band],t.right[band];t.left[band]=nil;t.right[band]=nil
+    local top=band*BAND;local rows=math.min(BAND,t.h-top)
+    -- widen to a multiple of ALIGN columns, kept inside the tile
+    local cols=math.min(t.w,math.ceil((right-left+1)/ALIGN)*ALIGN)
+    if left+cols>t.w then left=t.w-cols end
+    local slice=self:scratch(rows*cols*4)
+    if cols==t.w then buffer.copy(slice,0,t.pixels,top*t.w*4,rows*cols*4)
+    else for r=0,rows-1 do buffer.copy(slice,r*cols*4,t.pixels,((top+r)*t.w+left)*4,cols*4)end end
+    t.img:WritePixelsBuffer(Vector2.new(left,top),Vector2.new(cols,rows),slice)
+    sent+=rows*cols
+   end
+   if t.head>#t.queue then t.queue={};t.head=1 end
    return
   end
  end
 end
 function T:clear()
- for _,t in ipairs(self.tiles)do buffer.fill(t.pixels,0,0);t.low,t.high,t.left,t.right=0,t.h-1,0,t.w-1 end
+ for _,t in ipairs(self.tiles)do
+  buffer.fill(t.pixels,0,0);t.left={};t.right={};t.queue={};t.head=1
+  for band=0,math.ceil(t.h/BAND)-1 do t.left[band]=0;t.right[band]=t.w-1;table.insert(t.queue,band)end
+ end
 end
 function T:destroy()
  for _,t in ipairs(self.tiles)do pcall(function()t.img:Destroy()end)end

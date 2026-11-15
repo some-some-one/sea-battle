@@ -1,8 +1,11 @@
+--!native
 --!nonstrict
 -- OpenFront-derived fleet/economy adapter. © OpenFront and Contributors, AGPL-3.0; see LICENSE.
 local R=require(game.ReplicatedStorage.SeaBattle.NavalRules)
 local compact=require(game.ReplicatedStorage.SeaBattle.NumberFormat).compact
 local M={}
+-- Key of the 32×32-cell bucket (bx, by) in structureBuckets.
+local function bucketKey(bx,by)return by*4096+bx end
 function M.install(Game)
  function Game:distance(a,b)
   local w=self.grid.width;return math.sqrt(((a-1)%w-(b-1)%w)^2+(math.floor((a-1)/w)-math.floor((b-1)/w))^2)
@@ -13,11 +16,20 @@ function M.install(Game)
  end
  function Game:activeStructure(s)return not s.dead and s.ready<=self.time end
  function Game:nearStructures(cell,radius)
-  local c=self.grid:getCell(cell);local out={};local r=math.ceil(radius/32)
-  local x,y=math.floor((c.x-1)/32),math.floor((c.y-1)/32)
-  for yy=y-r,y+r do for xx=x-r,x+r do for _,s in ipairs(self.structureBuckets[xx..':'..yy]or {})do
-   if not s.dead and self:distance(cell,s.cell)<=radius then table.insert(out,s)end
-  end end end;return out
+  -- (buckets of 32×32 cells under numeric keys, distances worked out here: fighters ask this every
+  -- step over a radius of a hundred cells, 81 buckets, and string keys were most of a step's cost)
+  local w=self.grid.width;local out={};local r=math.ceil(radius/32)
+  local cx,cy=(cell-1)%w,(cell-1)//w;local x,y=cx//32,cy//32
+  local buckets,r2=self.structureBuckets,radius*radius
+  for yy=y-r,y+r do for xx=x-r,x+r do
+   local list=buckets[bucketKey(xx,yy)]
+   if list then for _,s in ipairs(list)do
+    if not s.dead then
+     local sx,sy=(s.cell-1)%w,(s.cell-1)//w
+     if(cx-sx)^2+(cy-sy)^2<=r2 then table.insert(out,s)end
+    end
+   end end
+  end end;return out
  end
  -- Structure mutations bump the revision; network sync and the level cache follow it.
  function Game:structuresChanged()
@@ -49,7 +61,7 @@ function M.install(Game)
    nextTrade=self.time+8,nextShot=0,ammo={},paid=not free,water=water}
   if kind=='airport'then s.land=cell end
   table.insert(self.structures,s);self.structureAt[cell]=s
-  local c=self.grid:getCell(cell);local key=math.floor((c.x-1)/32)..':'..math.floor((c.y-1)/32)
+  local w=self.grid.width;local key=bucketKey(((cell-1)%w)//32,((cell-1)//w)//32)
   self.structureBuckets[key]=self.structureBuckets[key]or {};table.insert(self.structureBuckets[key],s)
   self:structuresChanged();return s
  end
@@ -112,10 +124,20 @@ function M.install(Game)
   f.gold-=price;f.built[kind]=(f.built[kind]or 0)+1;self:newStructure(owner,kind,site,false,water)
   return true,'building'
  end
+ -- (asked for every cell a front takes: the ready defence posts of each owner are listed once per time
+ -- step, like levels(), instead of searching the structure buckets each time)
  function Game:fortified(owner,cell)
-  for _,s in ipairs(self:nearStructures(cell,R.DefenseRange))do
-   if s.owner==owner and s.kind=='defense'and self:activeStructure(s)then return true end
-  end;return false
+  local cache=self.defenseCache
+  if not cache or cache.revision~=self.structureRevision or cache.time~=self.time or cache.count~=#self.structures then
+   cache={revision=self.structureRevision,time=self.time,count=#self.structures,by={}}
+   for _,s in ipairs(self.structures)do
+    if s.kind=='defense'and self:activeStructure(s)then local list=cache.by[s.owner];if not list then list={};cache.by[s.owner]=list end;table.insert(list,s)end
+   end
+   self.defenseCache=cache
+  end
+  local list=cache.by[owner];if not list then return false end
+  for _,s in ipairs(list)do if self:distance(cell,s.cell)<=R.DefenseRange then return true end end
+  return false
  end
  -- Ends one order (`enemy`: its target, 0 for neutral expansion) or, without `enemy`, all of them.
  -- With a penalty (a retreat) 75% of the force comes home two seconds later.
@@ -142,12 +164,19 @@ function M.install(Game)
   local losses,defense,fraction=R.battle(order.fleet,f,defender,math.max(1,order.tickBorder or order.border or 1),fortified,self.fallout[id]and self.fallout[id]>self.time)
   return losses,defense,fraction,fortified
  end
+ local NONE=table.freeze({})
  function Game:onOwnership(id,old,new)
-  local affected={}
-  local direct=self.structureAt[id];if direct then table.insert(affected,direct)end
-  for _,land in ipairs(self.grid:neighborIds(id))do
-   local s=self.structureAt[land];if s and s.water==id then table.insert(affected,s)end
+  -- (a table only when a building is there: this runs for every captured cell)
+  local affected=nil
+  local at=self.structureAt
+  local direct=at[id];if direct then affected={direct}end
+  local n1,n2,n3,n4=self.grid:nb4(id)
+  for k=1,4 do
+   local land=k==1 and n1 or k==2 and n2 or k==3 and n3 or n4
+   local s=land>0 and at[land]
+   if s and s.water==id then affected=affected or {};table.insert(affected,s)end
   end
+  affected=affected or NONE
   for _,s in ipairs(affected)do if not s.dead then
    if new==0 or s.kind=='defense'then s.dead=true;self.structureAt[s.cell]=nil
    else s.owner=new end -- captured buildings change hands as they are, no new construction

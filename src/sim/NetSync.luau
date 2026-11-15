@@ -1,3 +1,4 @@
+--!native
 --!nonstrict
 -- Network state: ownership deltas every step, shared state at a slower cadence,
 -- prices and attack intel only for the player they belong to.
@@ -10,7 +11,7 @@ function M.install(Game)
  function Game:changes()
   local dirty=self.dirty;self.dirty={}
   local latest,order={},{}
-  for _,c in ipairs(dirty)do if latest[c[1]]==nil then table.insert(order,c[1])end;latest[c[1]]=c[2]end
+  for k=1,#dirty,2 do local id=dirty[k];if latest[id]==nil then table.insert(order,id)end;latest[id]=dirty[k+1]end
   local cells=buffer.create(#order*P.CellBytes)
   for i,id in ipairs(order)do
    buffer.writeu32(cells,(i-1)*P.CellBytes,id);buffer.writeu8(cells,(i-1)*P.CellBytes+4,latest[id])

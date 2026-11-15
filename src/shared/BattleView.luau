@@ -53,6 +53,30 @@ local SHAPES,WEAPON_SHAPE=Shapes.list,Shapes.weapon
 local RIM_GROW=1
 local MISSILE_RIM=Color3.fromRGB(255,96,40)
 local railColor,RAIL_TRANSPARENCY,WAGONS=Color3.fromRGB(40,34,30),.2,3
+-- Building icons and units shrink as the camera zooms out, so a zoomed-out map is not a mash of
+-- same-size icons (2026-11-15, the author's request; the idea follows RoWorld). The scale follows the
+-- screen points per map cell (cellPoints) straight down from full size at FULL_AT to MIN_SCALE (about
+-- 4 points), growing again past GROW_AT up to GROW_MAX. The glyph stays while the icon is at least
+-- GLYPH_PX points; smaller, the icon is a plain dot in the owner's colour. Tuned on an iPhone 7 held
+-- sideways, where the lobby's view is about 1 point a cell: icons of about 7 points that still show
+-- their glyph (the author's wish), dots of about 4 points on the whole-world view.
+local ICON_SIZE,ICON_SELECTED=26,32
+local MIN_SCALE,GLYPH_PX,FULL_AT,GROW_AT,GROW_MAX=.15,6.5,3.8,6,1.5
+function B.iconScale(cellPoints)
+ local s
+ if cellPoints>=GROW_AT then s=math.min(GROW_MAX,cellPoints/GROW_AT)
+ else s=math.clamp(cellPoints/FULL_AT,MIN_SCALE,1)end
+ return s,s*ICON_SIZE<GLYPH_PX
+end
+-- Units: the part of their size that keeps them readable far out shrinks the same way, down to
+-- UNIT_MIN_SCALE of it (a ship stays a speck you can see, not a 7-point bar over half a country).
+local UNIT_MIN_SCALE=.35
+-- More units than this in view with the camera still: they are moved every other frame.
+local UNIT_THROTTLE_AT=120
+-- A unit's rim and marks are drawn from this many screen points per shape pixel.
+local UNIT_DETAIL_AT=1.1
+local NONE=table.freeze({})
+function B.unitScale(cellPoints)return math.clamp(cellPoints/FULL_AT,UNIT_MIN_SCALE,1)end
 -- Icon of each building (IconAtlas names: the game's own art, no emoji).
 local buildingIcons={port='anchor',airport='plane',oil='drop',gas='flame',defense='shield',sam='radar',silo='radiation',battery='cannon'}
 local missileIcons={atom='rocket',hydrogen='burst',mirv='mirv',torpedo='torpedo',cluster='cluster',bomb='bomber'}
@@ -92,6 +116,12 @@ local function placeLine(p,a,b,width,y)
  p.Size=Vector3.new(width,.002,length+width*.5)
  p.CFrame=CFrame.lookAt(Vector3.new(mid.X,y,mid.Z),Vector3.new(b.X,y,b.Z))
  return true
+end
+-- A short key for a unit's corner path: its length, ends and middle. (It was every cell joined into one
+-- string, for every unit in every packet, several times a second.) The server plans a route between
+-- two places the same way each time, so these four numbers tell paths apart.
+local function railKey(rail)
+ local n=#rail;return n..'|'..rail[1]..'|'..rail[n]..'|'..rail[(n+1)//2]
 end
 function B.new(view)
  local self=setmetatable({v=view,markers={},selected=nil,target=nil,mode=nil,clock=0,unitState={},linkParts={},recentTrade={},routes={},routeCount=0,routeClock=0,rails={},rides={},rideCount=0,linkClock=1,tracers={}},B);view.battleUI=self
@@ -429,7 +459,12 @@ function B:update(camera,dt)
  local live=shown and(v.source=='solo'or v.source=='server')
  if live and not self.sfxLive then Sfx.play('start')end
  self.sfxLive=live
- if f then
+ -- The bar's numbers and prices ten times a second, or at once when the armed order changes (it wrote
+ -- dozens of interface properties every frame, a phone's frame budget for nothing).
+ self.barClock=(self.barClock or 1)+dt
+ local barDue=self.barClock>=.1 or self.bar.active~=self.barActive
+ if f and barDue then
+  self.barClock=0;self.barActive=self.bar.active
   local prices={}
   for kind in pairs(self.buildButtons)do prices['Build_'..kind]=self:price('build',kind)end
   prices.Fighter=self:price('fighter')
@@ -460,6 +495,7 @@ function B:update(camera,dt)
   for kind in pairs(self.missileButtons)do prices['Missile_'..kind]=self:price('missile',kind)end
   self.bar:update(f,prices)
  end
+ self.bar:animateShop()
  self.bar:layout(size,compactMode,shown)
  -- Alliance offers sit just above the bar.
  self.offers.Position=UDim2.new(.5,0,0,(self.bar.top or size.Y-92)-8)
@@ -470,110 +506,188 @@ function B:update(camera,dt)
  if v.pauseSpot then x,y=v.pauseSpot.X,v.pauseSpot.Y end
  self.pause:update(v.playerId~=nil and v.phase~='choosing',x,y)
  self.menu.Visible=false
- local translated={easy='easy',normal='normal',hard='hard',solo='single player',online='online'}
- for key,b in pairs(self.settingRows)do
-  local names={difficulty='Difficulty',mode='Mode'}
-  local value=s[key];local shown=type(value)=='number'and(math.floor(value*100+.5)..'% of the water')or translated[value]or(value and 'yes'or 'no')
-  b.Text=names[key]..': '..shown
+ -- (the old settings panel stays hidden: its rows are written only when the settings change)
+ if s~=self.shownSettings then
+  self.shownSettings=s
+  local translated={easy='easy',normal='normal',hard='hard',solo='single player',online='online'}
+  for key,b in pairs(self.settingRows)do
+   local names={difficulty='Difficulty',mode='Mode'}
+   local value=s[key];local shown=type(value)=='number'and(math.floor(value*100+.5)..'% of the water')or translated[value]or(value and 'yes'or 'no')
+   b.Text=names[key]..': '..shown
+  end
  end
  if self.clock>.25 then self.clock=0;self:watchEvents(battle)end
  -- Button highlights only need a few refreshes a second (mode changes refresh at once).
  self.selectionClock=(self.selectionClock or 0)+dt
  if self.selectionClock>.2 then self.selectionClock=0;self:refreshSelection()end
- -- Building markers move only with the camera: redraw them when it moves, when buildings or the
- -- selection change, and once a second for construction progress — not on every frame.
+ -- Building plates are gone over when the buildings, the selection, the screen or the zoom change,
+ -- and once a second for construction progress; a pan only moves their frame (below).
  local selectedKey=self.selected and(self.selected.type..self.selected.id)or''
  self.markerClock=(self.markerClock or 0)+dt
- local redraw=camera.CFrame~=self.lastCamera or camera.ViewportSize~=self.lastViewport or battle.structures~=self.lastStructures
-  or selectedKey~=self.lastSelected or self.markerClock>1
+ -- (a new structure list, which online arrives with most messages, at most four times a second)
+ local listed=battle.structures~=self.lastStructures and os.clock()-(self.structuresAt or 0)>=.25
+ local redraw=camera.ViewportSize~=self.lastViewport or listed or selectedKey~=self.lastSelected or self.markerClock>1
  if redraw then
-  self.lastCamera=camera.CFrame;self.lastViewport=camera.ViewportSize;self.lastStructures=battle.structures;self.lastSelected=selectedKey;self.markerClock=0
-  self.defenseZone.Visible=false
+  self.lastViewport=camera.ViewportSize;self.lastStructures=battle.structures;self.lastSelected=selectedKey;self.markerClock=0
+  self.structuresAt=os.clock()
  end
  local now=os.clock();local grid=v.grid;local tile=grid.data.tileSize
  local width=math.max(.012,(v.borderWidth or .035)*1.4);local widthChanged=self.lineWidth~=width;self.lineWidth=width
  if lift~=(v.overlayLift or 0)then lift=v.overlayLift or 0;widthChanged=true end
- local function worldOf(cell)local c=grid:getCell(cell);return c and grid:cellToWorld(c.x,c.y)end
+ -- (worked out from the id: getCell built a whole cell record for every unit every frame)
+ local gw,gcount=grid.width,grid.count
+ local function worldOf(cell)
+  if type(cell)~='number'or cell%1~=0 or cell<1 or cell>gcount then return nil end
+  return grid:cellToWorld((cell-1)%gw+1,(cell-1)//gw+1)
+ end
  local seen={}
+ -- Building icons follow the zoom (B.iconScale): full size from about 1.5 screen points per cell,
+ -- smaller farther out, plain dots in the owner's colour at the farthest zoom.
+ local cellPoints=tile/math.max(1e-6,v.pixelWorld or tile)
+ local iconScale,dots=B.iconScale(cellPoints)
+ self.iconDots=dots
+ -- The camera looks straight down, so a map point's screen position is origin + (x, z)·k: two projections
+ -- a frame give both, and the plates live in one frame (self.plates) moved to the origin. A pan moves
+ -- that frame alone; only a zoom (a new k) places the plates again. Each plate remembers what it was
+ -- given and Roblox is written only what changed, never read back. (2026-11-15: every plate was
+ -- projected and about twenty properties were set on each camera move, hundreds of plates in a late
+ -- match, a phone's whole frame while the map was dragged.)
+ local o0=camera:WorldToScreenPoint(Vector3.zero);local o1=camera:WorldToScreenPoint(Vector3.new(1,0,0))
+ local k=o1.X-o0.X;local onScreen=o0.Z>0
+ if not self.plates then
+  self.plates=ui('Frame',v.marks,{Name='StructurePlates',BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.fromOffset(0,0),ZIndex=2})
+  self.plates:SetAttribute('Marker',true);self.plateState={}
+ end
+ local origin=UDim2.fromOffset(o0.X,o0.Y)
+ if self.platesAt~=origin then self.platesAt=origin;self.plates.Position=origin end
+ if self.platesShown~=onScreen then self.platesShown=onScreen;self.plates.Visible=onScreen end
+ local zoomed=self.plateK~=k;self.plateK=k
+ local states=self.plateState
+ -- (the value last written to obj.prop, kept per plate and object)
+ local function set(st,obj,prop,value)
+  local c=st[obj];if not c then c={};st[obj]=c end
+  if c[prop]~=value then c[prop]=value;obj[prop]=value end
+ end
  local function marker(key,pos,icon,owner,level,building)
-  local point,visible=camera:WorldToScreenPoint(pos)
-  local b=self.markers[key]
-  if not b then
-   -- A plate in the owner's colour with the building's white glyph (a structure plate).
-   b=text(v.marks,key,'',0,0,26,26,16);b:SetAttribute('Marker',true);b.ZIndex=2;b.AnchorPoint=Vector2.new(.5,.5)
+  local st=states[key]
+  if not st then
+   -- A plate in the owner's colour with the building's white glyph (a structure plate); the level badge
+   -- and the progress bar are made when first needed.
+   local b=text(self.plates,key,'',0,0,26,26,16);b:SetAttribute('Marker',true);b.ZIndex=2;b.AnchorPoint=Vector2.new(.5,.5)
    b.BackgroundColor3=Color3.fromRGB(60,80,92);b.BackgroundTransparency=0
-   ui('UICorner',b,{CornerRadius=UDim.new(1,0)});ui('UIStroke',b,{Name='Owner',Thickness=2,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+   ui('UICorner',b,{CornerRadius=UDim.new(1,0)})
+   local stroke=ui('UIStroke',b,{Name='Owner',Thickness=2,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
    local glyph=Icons.image(b,icon,16,Color3.new(1,1,1),{Name='Glyph',AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromScale(.66,.66),ZIndex=3})
    glyph:SetAttribute('Marker',true)
+   st={b=b,glyph=glyph,stroke=stroke,icon=icon};states[key]=st;self.markers[key]=b
+  end
+  local b=st.b
+  local selected=self.selected and key==(self.selected.type=='unit'and 'Unit_'or 'Structure_')..self.selected.id
+  if st.selected~=(selected==true)then st.selected=selected==true;b:SetAttribute('Selected',st.selected)end
+  local px=math.max(4,math.floor((selected and ICON_SELECTED or ICON_SIZE)*iconScale+.5))
+  set(st,b,'Size',UDim2.fromOffset(px,px))
+  set(st,st.glyph,'Visible',not dots)
+  -- (on a small circle the glyph fills more of it, so it still reads)
+  local g=px<12 and .8 or .66;set(st,st.glyph,'Size',UDim2.fromScale(g,g))
+  if st.icon~=icon then st.icon=icon;Icons.set(st.glyph,icon)end
+  if zoomed or st.x~=pos.X or st.z~=pos.Z or st.k~=k then
+   st.x,st.z,st.k=pos.X,pos.Z,k;set(st,b,'Position',UDim2.fromOffset(pos.X*k,pos.Z*k))
+  end
+  set(st,st.glyph,'ImageTransparency',building and .5 or 0)
+  if not building and st.progress then set(st,st.progress,'Visible',false)end
+  local country=v.factions[owner]
+  local color=country and Color3.fromRGB(table.unpack(country.color))or Color3.fromRGB(120,140,150)
+  set(st,b,'BackgroundColor3',color:Lerp(Color3.fromRGB(16,26,34),.25))
+  set(st,st.stroke,'Color',selected and Color3.new(1,1,1)or color:Lerp(Color3.fromRGB(10,16,22),.55))
+  -- (a dot under 7 points has no rim: it would be all rim)
+  set(st,st.stroke,'Thickness',dots and(px<7 and 0 or 1)or selected and 3 or px<14 and 1 or 2)
+  local showLevel=(level or 1)>1 and iconScale>=.7
+  if showLevel and not st.level then
    local badge=text(b,'Level','',0,0,14,13,9);badge:SetAttribute('Marker',true);badge.AnchorPoint=Vector2.new(.5,.5);badge.Position=UDim2.new(1,-3,1,-3)
    badge.TextXAlignment=Enum.TextXAlignment.Center;badge.BackgroundColor3=accent;badge.BackgroundTransparency=0;badge.TextColor3=ink;badge.ZIndex=3
-   ui('UICorner',badge,{CornerRadius=UDim.new(1,0)})
-   -- Construction progress: a small bar under the icon that fills until the building is ready.
-   local bar=ui('Frame',b,{Name='Progress',AnchorPoint=Vector2.new(.5,0),Position=UDim2.new(.5,0,1,3),Size=UDim2.fromOffset(24,5),
+   ui('UICorner',badge,{CornerRadius=UDim.new(1,0)});st.level=badge
+  end
+  if st.level then set(st,st.level,'Visible',showLevel);set(st,st.level,'Text',tostring(level or 1))end
+  st.px=px
+  seen[key]=true
+ end
+ -- The progress bar of a plate, made on first use: it keeps to the icon's width.
+ local function progressOf(st)
+  if not st.progress then
+   local bar=ui('Frame',st.b,{Name='Progress',AnchorPoint=Vector2.new(.5,0),Position=UDim2.new(.5,0,1,3),Size=UDim2.fromOffset(24,5),
     BackgroundColor3=ink,BackgroundTransparency=.1,BorderSizePixel=0,ZIndex=3,Visible=false})
    bar:SetAttribute('Marker',true);ui('UICorner',bar,{CornerRadius=UDim.new(1,0)})
    local fill=ui('Frame',bar,{Name='Fill',Size=UDim2.fromScale(0,1),BackgroundColor3=accent,BorderSizePixel=0,ZIndex=4})
    fill:SetAttribute('Marker',true);ui('UICorner',fill,{CornerRadius=UDim.new(1,0)})
-   self.markers[key]=b
+   st.progress,st.fill=bar,fill
   end
-  local selected=self.selected and key==(self.selected.type=='unit'and 'Unit_'or 'Structure_')..self.selected.id
-  b:SetAttribute('Selected',selected==true);b.Size=UDim2.fromOffset(selected and 32 or 26,selected and 32 or 26)
-  if b:GetAttribute('Icon')~=icon then b:SetAttribute('Icon',icon);Icons.set(b.Glyph,icon)end
-  b.Position=UDim2.fromOffset(point.X,point.Y);b.Visible=visible
-  b.Glyph.ImageTransparency=building and .5 or 0;if not building then b.Progress.Visible=false end
-  local country=v.factions[owner]
-  local color=country and Color3.fromRGB(table.unpack(country.color))or Color3.fromRGB(120,140,150)
-  b.BackgroundColor3=color:Lerp(Color3.fromRGB(16,26,34),.25)
-  b.Owner.Color=selected and Color3.new(1,1,1)or color:Lerp(Color3.fromRGB(10,16,22),.55)
-  b.Owner.Thickness=selected and 3 or 2
-  b.Level.Visible=(level or 1)>1;b.Level.Text=tostring(level or 1)
-  seen[key]=true
+  local px=st.px or ICON_SIZE
+  set(st,st.progress,'Size',UDim2.fromOffset(math.max(6,math.floor(px*.92)),math.max(2,math.floor(5*math.min(1,iconScale)+.5))))
+  return st.progress,st.fill
  end
+ -- Missile defence rings: placed in the plates' frame as well, sized by k.
+ local function samRing(key,pos,a)
+  local st=states[key]
+  if not st then
+   local ring=ui('Frame',self.plates,{Name=key,AnchorPoint=Vector2.new(.5,.5),BackgroundTransparency=1,BorderSizePixel=0,ZIndex=1})
+   ring:SetAttribute('Marker',true);ui('UICorner',ring,{CornerRadius=UDim.new(1,0)})
+   st={b=ring,line=ui('UIStroke',ring,{Name='Line',Thickness=1.5})};states[key]=st;self.markers[key]=ring
+  end
+  local diameter=math.abs(R.samRange(a.level or 1)*tile*k)*2;local country=v.factions[a.owner]
+  set(st,st.b,'Position',UDim2.fromOffset(pos.X*k,pos.Z*k));set(st,st.b,'Size',UDim2.fromOffset(diameter,diameter))
+  -- Owner colour lifted toward white so the line stands out against that owner's own fill.
+  set(st,st.line,'Color',(country and Color3.fromRGB(table.unpack(country.color))or white):Lerp(white,.45))
+  set(st,st.line,'Transparency',(a.ready or 0)>(battle.time or 0)and .55 or 0)
+  set(st,st.b,'Visible',diameter>8);seen[key]=true
+ end
+ -- Plates are gone over when the structures, the selection or the zoom change, and once a second.
+ if zoomed then redraw=true end
  -- Bars of buildings under construction, collected on redraw and filled every frame.
  local bars=redraw and {}or self.bars or {}
  for _,a in ipairs(redraw and battle.structures or {})do
   local pos=worldOf(a.cell)
   if pos then
    local key='Structure_'..a.id;local building=(a.ready or 0)>(battle.time or 0)
-   marker(key,pos,buildingIcons[a.kind]or 'help',a.owner,a.level,building)
+   -- (a plate whose building, owner, level, place and zoom are as last drawn is left alone)
+   local st=states[key];local sig=a.kind..':'..a.owner..':'..(a.level or 1)..(building and 'b'or '')..((self.selected and self.selected.type=='structure'and self.selected.id==a.id)and 's'or '')
+   if st and st.sig==sig and st.k==k and st.x==pos.X and st.z==pos.Z and st.dots==dots and st.scale==iconScale then seen[key]=true
+   else
+    marker(key,pos,buildingIcons[a.kind]or 'help',a.owner,a.level,building)
+    st=states[key];st.sig=sig;st.dots=dots;st.scale=iconScale
+   end
    if building then bars[key]={ready=a.ready,seconds=R.Buildings[a.kind]and R.Buildings[a.kind].seconds or 1}
    elseif a.reload and a.reload>(battle.time or 0)then bars[key]={ready=a.reload,seconds=R.reload(a.kind,a.level),reload=true}end
   end
   -- Missile defence: a thin circle in the owner's colour marks the interception range.
-  if pos and a.kind=='sam'then
-   local key='SamRange_'..a.id;local ring=self.markers[key]
-   if not ring then
-    ring=ui('Frame',v.marks,{Name=key,AnchorPoint=Vector2.new(.5,.5),BackgroundTransparency=1,BorderSizePixel=0,ZIndex=1})
-    ring:SetAttribute('Marker',true);ui('UICorner',ring,{CornerRadius=UDim.new(1,0)});ui('UIStroke',ring,{Name='Line',Thickness=1.5})
-    self.markers[key]=ring
+  if pos and a.kind=='sam'then samRing('SamRange_'..a.id,pos,a)end
+ end
+ -- The selected defence post's protected area (one at most): found on redraw, placed every frame.
+ if redraw then
+  self.defensePos=nil
+  if self.selected and self.selected.type=='structure'then
+   for _,a in ipairs(battle.structures or {})do
+    if a.kind=='defense'and self.selected.id==a.id then self.defensePos=worldOf(a.cell);break end
    end
-   local center,visible=camera:WorldToScreenPoint(pos);local edge=camera:WorldToScreenPoint(pos+Vector3.new(R.samRange(a.level or 1)*tile,0,0))
-   local diameter=math.abs(edge.X-center.X)*2;local country=v.factions[a.owner]
-   ring.Position=UDim2.fromOffset(center.X,center.Y);ring.Size=UDim2.fromOffset(diameter,diameter)
-   -- Owner colour lifted toward white so the line stands out against that owner's own fill.
-   ring.Line.Color=(country and Color3.fromRGB(table.unpack(country.color))or white):Lerp(white,.45)
-   ring.Line.Transparency=(a.ready or 0)>(battle.time or 0)and .55 or 0
-   -- WorldToScreenPoint only says whether the centre is on screen; a large ring can still cross the view.
-   ring.Visible=center.Z>0 and diameter>8;seen[key]=true
-  end
-  if a.kind=='defense'and self.selected and self.selected.type=='structure'and self.selected.id==a.id then
-   local center,visible=camera:WorldToScreenPoint(pos);local edge=camera:WorldToScreenPoint(pos+Vector3.new(R.DefenseRange*tile,0,0))
-   local diameter=math.abs(edge.X-center.X)*2
-   self.defenseZone.Position=UDim2.fromOffset(center.X,center.Y);self.defenseZone.Size=UDim2.fromOffset(diameter,diameter);self.defenseZone.Visible=visible
   end
  end
+ if self.defensePos then
+  local pos=self.defensePos;local diameter=math.abs(R.DefenseRange*tile*k)*2
+  self.defenseZone.Position=UDim2.fromOffset(o0.X+pos.X*k,o0.Y+pos.Z*k);self.defenseZone.Size=UDim2.fromOffset(diameter,diameter);self.defenseZone.Visible=onScreen
+ elseif self.defenseZone.Visible then self.defenseZone.Visible=false end
  self.bars=bars
  -- Server time arrives ten times a second; run it on locally in between so the bar fills smoothly.
  if battle.time~=self.barTime then self.barTime=battle.time;self.barClock=now end
  local clockNow=(battle.time or 0)+math.min(.2,now-(self.barClock or now))
  for key,info in pairs(bars)do
-  local b=self.markers[key]
-  if b then
+  local st=states[key]
+  if st then
    local done=math.clamp(1-(info.ready-clockNow)/math.max(.1,info.seconds),0,1)
-   b.Progress.Visible=done<1;b.Progress.Fill.Size=UDim2.fromScale(done,1)
+   local bar,fill=progressOf(st)
+   set(st,bar,'Visible',done<1 and not self.iconDots)
+   set(st,fill,'Size',UDim2.fromScale(math.floor(done*48+.5)/48,1))
    -- Construction fills teal, a missile defence or platform reloading fills orange.
-   b.Progress.Fill.BackgroundColor3=info.reload and RELOAD_COLOR or accent
-   if done>=1 then if not info.reload then b.TextTransparency=0 end;bars[key]=nil end
+   set(st,fill,'BackgroundColor3',info.reload and RELOAD_COLOR or accent)
+   if done>=1 then bars[key]=nil end
   else bars[key]=nil end
  end
  -- Units arrive as server samples five times a second, and packets come unevenly. Each sample is kept with
@@ -591,10 +705,21 @@ function B:update(camera,dt)
   end
  end
  local renderT=self.simTime-UNIT_DELAY*scale
+ -- Frames are "held" while many units are in view and the camera stands still: units move 30 times a
+ -- second then, 20 when they are specks on a zoomed-out map (a unit moves a fraction of a point a
+ -- frame there; RoWorld redraws its units 20-30 times a second the same way). (2026-11-15, phones.)
+ local still=camera.CFrame==self.unitCamera;self.unitCamera=camera.CFrame
+ self.unitFrame=(self.unitFrame or 0)+1
+ local _,far=B.iconScale(tile/math.max(1e-6,v.pixelWorld or tile))
+ local every=far and 3 or 2
+ local hold=still and(self.unitsInView or 0)>UNIT_THROTTLE_AT and self.unitFrame%every~=0
  local fresh=battle.unitsTime~=nil and battle.unitsTime~=self.unitsTime
  if fresh then self.unitsTime=battle.unitsTime end
- local alive={}
- for _,u in ipairs(battle.units or {})do
+ -- The unit list is gone over when a new one arrives, not every frame.
+ local listChanged=fresh or battle.units~=self.seenUnits
+ local alive=listChanged and {}or self.aliveUnits or {}
+ if listChanged then self.seenUnits=battle.units;self.aliveUnits=alive end
+ for _,u in ipairs(listChanged and battle.units or NONE)do
   local target=worldOf(u.cell);local st=self.unitState[u.id]
   if target then
    if not st then st={pos=target,trail={target},parts={},path={target},samples={}};self.unitState[u.id]=st end
@@ -638,6 +763,8 @@ function B:update(camera,dt)
   if not st.started and newest and renderT>=sm[1].t then st.started=true end
   -- A unit that left the server list still plays out its last samples before it fades.
   if not alive[id]and not st.dying and(not newest or renderT>=newest.t)then st.dying=now;if st.kind=='missile'then self:missileEnded(st,camera)end end
+  -- Held frame (many units in view, the camera still): only missiles move on.
+  if hold and not st.dying and st.kind~='missile'then continue end
   if newest then
    local a,b=sm[1],nil
    for i=#sm,1,-1 do if sm[i].t<=renderT then a,b=sm[i],sm[i+1];break end end
@@ -695,9 +822,10 @@ function B:update(camera,dt)
   end
  end
  -- Pixel size follows the zoom: about one map cell up close, never smaller than ~6 screen points.
- local pixelWorld=v.pixelWorld or tile;local size=math.max(tile*1.4,pixelWorld*6)
+ -- (far out the screen-point floor itself shrinks with the zoom: B.unitScale)
+ local pixelWorld=(v.pixelWorld or tile)*B.unitScale(cellPoints);local size=math.max(tile*1.4,pixelWorld*6)
  -- One "pixel" of a unit's shape: a quarter of a wagon's length (a ship is as long as a wagon):
- -- 0.4 of a map cell up close, 1.75 screen points at the farthest.
+ -- 0.4 of a map cell up close, 1.75 screen points at middle zoom, less farther out.
  local pixel=math.max(tile*.4,pixelWorld*1.75)
  -- Drawn from the local state, so a unit the server already removed still finishes its last samples.
  -- Only what changed is written: colours and sizes when they differ, positions of moved units in one
@@ -718,14 +846,27 @@ function B:update(camera,dt)
  local function setColor(p,c)if p.Color~=c then p.Color=c end end
  local function setSize(p,sz)if p.Size~=sz then p.Size=sz end end
  local selectedUnit=self.selected and self.selected.type=='unit'and self.selected.id
+ -- Only units on screen (with a margin) are moved; one that comes into view is placed that frame.
+ -- With many of them in view and the camera still, they move 30 times a second instead of every
+ -- frame (at that zoom a unit moves a fraction of a point a frame). (2026-11-15, for phones.)
+ local vw,vh=camera.ViewportSize.X,camera.ViewportSize.Y
+ local margin=tile*6
+ local minX,maxX=(0-o0.X)/k-margin,(vw-o0.X)/k+margin
+ local minZ,maxZ=(0-o0.Y)/k-margin,(vh-o0.Y)/k+margin
+ local inView=0
  for id,st in pairs(self.unitState)do
   if st.dying or not st.started then continue end
+  -- (a held frame leaves everything but missiles where it was: see `hold` above)
+  if hold and st.kind~='missile'then continue end
   local kind=st.kind;local selected=selectedUnit==id
+  local p0=st.pos
+  local visible=onScreen and p0.X>=minX and p0.X<=maxX and p0.Z>=minZ and p0.Z<=maxZ
+  if visible then inView+=1 end
   if st.rail and st.arc and kind=='train'then
    -- Locomotive in the owner colour, wagons behind it along the track.
    local length=math.max(tile*1.6,pixelWorld*7);local gap=length*1.3
    if not st.wagons then st.wagons={};for k=1,WAGONS do st.wagons[k]=linePart(self.unitFolder,unitColors.train)end end
-   if st.drawnArc~=st.arc or st.drawnLength~=length or st.drawnLift~=lift or st.drawnSelected~=selected then
+   if(st.drawnArc==nil or visible and not hold)and(st.drawnArc~=st.arc or st.drawnLength~=length or st.drawnLift~=lift or st.drawnSelected~=selected)then
     st.drawnArc=st.arc;st.drawnLength=length;st.drawnLift=lift;st.drawnSelected=selected
     local sz=Vector3.new(length*.55,.002,length)
     for k,p in ipairs(st.wagons)do
@@ -742,7 +883,7 @@ function B:update(camera,dt)
    local n,nm,nl=#pieces,#mark,#light
    if not st.shape or st.shapeName~=shapeName then
     for _,p in ipairs(st.shape or {})do p:Destroy()end
-    st.shapeName=shapeName;st.drawnPos=nil
+    st.shapeName=shapeName;st.drawnPos=nil;st.drawnSize=nil;st.drawnRim=nil;st.detail=nil
     st.shape={};for i=1,n*2+nm+nl do st.shape[i]=linePart(self.unitFolder,white)end
    end
    local owner=vivid(st.owner)
@@ -750,16 +891,31 @@ function B:update(camera,dt)
    local rim=selected and white or shape.rim or kind=='missile'and MISSILE_RIM or fill:Lerp(Color3.new(0,0,0),.45)
    local dark=fill:Lerp(Color3.new(0,0,0),.6)
    local q=(selected and pixel*1.4 or pixel)*(shape.scale or 1)
-   for i=1,n do setColor(st.shape[i],rim);setColor(st.shape[n+i],fill)end
-   for i=1,nl do setColor(st.shape[n*2+i],white)end
-   for i=1,nm do setColor(st.shape[n*2+nl+i],shapeName=='mirv'and Color3.fromRGB(20,20,24)or dark)end
+   -- Far out (a shape pixel under UNIT_DETAIL_AT screen points) only the fill is drawn: the rim and the
+   -- marks could not be seen, and they were most of the parts moved every frame.
+   local detail=q/(v.pixelWorld or tile)>=UNIT_DETAIL_AT
+   if st.detail~=detail then
+    st.detail=detail;st.drawnPos=nil;st.drawnSize=nil
+    local hidden=detail and 0 or 1
+    for i=1,n do st.shape[i].Transparency=hidden end
+    for i=n*2+1,#st.shape do st.shape[i].Transparency=hidden end
+   end
+   -- (colours are written when they change, not read back every frame)
+   if st.drawnRim~=rim or st.drawnFill~=fill or st.drawnDark~=dark then
+    st.drawnRim,st.drawnFill,st.drawnDark=rim,fill,dark
+    for i=1,n do st.shape[i].Color=rim;st.shape[n+i].Color=fill end
+    for i=1,nl do st.shape[n*2+i].Color=white end
+    for i=1,nm do st.shape[n*2+nl+i].Color=shapeName=='mirv'and Color3.fromRGB(20,20,24)or dark end
+   end
    local heading=0
    if shape.turn then
     local to=st.destination and self:cellPoint(st.destination)
     if to then local d=to-st.pos;if d.Magnitude>tile*.5 then st.heading=math.atan2(-d.Z,d.X)end end
     heading=st.heading or 0
    end
-   if st.drawnPos~=st.pos or st.drawnSize~=q or st.drawnLift~=lift or st.drawnHeading~=heading then
+   -- (new parts are placed at once, wherever they are)
+   if(st.drawnPos==nil or visible and not hold)and(st.drawnPos~=st.pos or st.drawnSize~=q or st.drawnLift~=lift or st.drawnHeading~=heading)then
+    local resize=st.drawnSize~=q
     st.drawnPos=st.pos;st.drawnSize=q;st.drawnLift=lift;st.drawnHeading=heading
     local turn=CFrame.Angles(0,heading,0)
     local function at(piece,y)
@@ -769,21 +925,22 @@ function B:update(camera,dt)
     for i,piece in ipairs(pieces)do
      local w,h=piece[1],piece[2]
      local rimPart,fillPart=st.shape[i],st.shape[n+i]
-     setSize(rimPart,Vector3.new((w+RIM_GROW)*q,.002,(h+RIM_GROW)*q));setSize(fillPart,Vector3.new(w*q,.002,h*q))
-     table.insert(moveParts,rimPart);table.insert(moveFrames,at(piece,layerY(.033)))
+     if resize then if detail then rimPart.Size=Vector3.new((w+RIM_GROW)*q,.002,(h+RIM_GROW)*q)end;fillPart.Size=Vector3.new(w*q,.002,h*q)end
+     if detail then table.insert(moveParts,rimPart);table.insert(moveFrames,at(piece,layerY(.033)))end
      table.insert(moveParts,fillPart);table.insert(moveFrames,at(piece,layerY(.034)))
     end
-    for i,piece in ipairs(light)do
-     local p=st.shape[n*2+i];setSize(p,Vector3.new(piece[1]*q,.002,piece[2]*q))
+    for i,piece in ipairs(detail and light or NONE)do
+     local p=st.shape[n*2+i];if resize then p.Size=Vector3.new(piece[1]*q,.002,piece[2]*q)end
      table.insert(moveParts,p);table.insert(moveFrames,at(piece,layerY(.0345)))
     end
-    for i,piece in ipairs(mark)do
-     local p=st.shape[n*2+nl+i];setSize(p,Vector3.new(piece[1]*q,.002,piece[2]*q))
+    for i,piece in ipairs(detail and mark or NONE)do
+     local p=st.shape[n*2+nl+i];if resize then p.Size=Vector3.new(piece[1]*q,.002,piece[2]*q)end
      table.insert(moveParts,p);table.insert(moveFrames,at(piece,layerY(.035)))
     end
    end
   end
  end
+ if not hold then self.unitsInView=inView end
  if #moveParts>0 then workspace:BulkMoveTo(moveParts,moveFrames,Enum.BulkMoveMode.FireCFrameChanged)end
  self:updateFighterRings(camera,ownerColor)
  self:updateMissileAreas(lift)
@@ -817,7 +974,7 @@ function B:update(camera,dt)
   for _,r in pairs(self.routes)do self:placeRoute(r,width)end
   for _,r in pairs(self.rails)do self:placeRail(r,width)end
  end
- if redraw then for key,o in pairs(self.markers)do if not seen[key]then o:Destroy();self.markers[key]=nil end end end
+ if redraw then for key,o in pairs(self.markers)do if not seen[key]then o:Destroy();self.markers[key]=nil;if self.plateState then self.plateState[key]=nil end end end end
  self:updateRailways(battle,width)
  self.linkClock+=dt
  if self.linkClock>.5 or widthChanged then self.linkClock=0;self:updateLinks(battle,width,now,worldOf)end
@@ -966,8 +1123,9 @@ function B:updateLinks(battle,width,now,worldOf)
  for _,u in ipairs(battle.units or {})do if u.origin and u.destination and u.kind=='merchant'and type(u.rail)=='table'and #u.rail>1 then
   local key=keyOf(u.origin,u.destination)
   local known=self.tradePaths[key]
-  if not known or known.signature~=table.concat(u.rail,',')then
-   local rail=self:railFor(u);self.tradePaths[key]={points=rail.points,signature=table.concat(u.rail,','),a=u.origin,b=u.destination}
+  local signature=railKey(u.rail)
+  if not known or known.signature~=signature then
+   local rail=self:railFor(u);self.tradePaths[key]={points=rail.points,signature=signature,a=u.origin,b=u.destination}
   end
   self.recentTrade[key]=now;wanted[key]=2
  end end
@@ -1019,7 +1177,7 @@ function B:placeRoute(route,width)
 end
 -- A train's ride as corner points with distances along it; drawn track comes from the network instead.
 function B:railFor(u)
- local signature=table.concat(u.rail,',');local rail=self.rides[signature]
+ local signature=railKey(u.rail);local rail=self.rides[signature]
  if rail then return rail end
  local grid=self.v.grid;local w=grid.width
  rail={points={},arcs={},cellArc={}}

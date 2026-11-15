@@ -1,3 +1,4 @@
+--!native
 --!nonstrict
 -- Water/land inversion of OpenFront transport, trade, warship and missile roles.
 -- © OpenFront and Contributors. Modified 2026-11-02; see LICENSE.
