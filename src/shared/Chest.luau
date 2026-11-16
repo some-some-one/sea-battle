@@ -36,17 +36,46 @@ local function rgb(t)return Color3.fromRGB(t[1],t[2],t[3])end
 local function rarityColor(r)return rgb((Catalog.Rarity[r]or Catalog.Rarity.common).color)end
 
 -- The golden key: the author's own pictures (2026-11-16, made from docs/trailer/goldenkey.png: a gold key and
--- a charcoal one, the hole cut out; assets/ui/key_gold.png and key_charcoal.png). Gold on the window's dark
--- tiles, charcoal on the gold tile. `s`: the picture's side in points.
+-- a charcoal one, the hole cut out). Gold on the window's dark tiles, charcoal on the gold tile. They are
+-- built here in an EditableImage from the pixels in shared/KeyPixels (tools/make_keys.py): the uploaded
+-- copies stay private to the author (players saw no key in the published game, Studio did), so they are only
+-- the fallback when no EditableImage can be made. `s`: the picture's side in points.
+local KeyPixels=require(script.Parent.KeyPixels)
 local KEY_GOLD,KEY_CHARCOAL='rbxassetid://82194758169670','rbxassetid://125786457127449'
+local keyContent={}
+local function hexAt(str,i)local b=string.byte(str,i);return b<=57 and b-48 or b-87 end
+local function buildKey(name)
+ if keyContent[name]~=nil then return keyContent[name]end
+ keyContent[name]=false
+ local side=KeyPixels.side;local data=KeyPixels[name]
+ local ok,img=pcall(function()return game:GetService('AssetService'):CreateEditableImage({Size=Vector2.new(side,side)})end)
+ if not ok or not img then return false end
+ local buf=buffer.create(side*side*4)
+ local i,pos,n=1,0,#data
+ while i<=n do
+  if string.byte(data,i)==122 then pos+=tonumber(string.sub(data,i+1,i+3),16)+1;i+=4
+  else
+   local r,g,b,a=hexAt(data,i)*17,hexAt(data,i+1)*17,hexAt(data,i+2)*17,hexAt(data,i+3)*17
+   local run=hexAt(data,i+4)+1
+   for k=pos,pos+run-1 do buffer.writeu8(buf,k*4,r);buffer.writeu8(buf,k*4+1,g);buffer.writeu8(buf,k*4+2,b);buffer.writeu8(buf,k*4+3,a)end
+   pos+=run;i+=5
+  end
+ end
+ if pcall(function()img:WritePixelsBuffer(Vector2.zero,Vector2.new(side,side),buf)end)then keyContent[name]=Content.fromObject(img)end
+ return keyContent[name]
+end
+local function setKey(image,gold)
+ local content=buildKey(gold and 'gold'or 'charcoal')
+ if content then image.ImageContent=content else image.Image=gold and KEY_GOLD or KEY_CHARCOAL end
+end
 local function keyArt(parent,s,color,z)
- local img=make('ImageLabel',parent,{Name='Key',AnchorPoint=Vector2.new(.5,.5),BackgroundTransparency=1,Size=UDim2.fromOffset(s,s),
-  Image=color==GOLD and KEY_GOLD or KEY_CHARCOAL,ZIndex=z})
- return {root=img}
+ local img=make('ImageLabel',parent,{Name='Key',AnchorPoint=Vector2.new(.5,.5),BackgroundTransparency=1,Size=UDim2.fromOffset(s,s),ZIndex=z})
+ setKey(img,color==GOLD)
+ return {root=img,gold=color==GOLD}
 end
 local function tintKey(key,color)
- local image=color==GOLD and KEY_GOLD or KEY_CHARCOAL
- if key.root.Image~=image then key.root.Image=image end
+ local gold=color==GOLD
+ if key.gold~=gold then key.gold=gold;setKey(key.root,gold)end
 end
 -- The chest drawn with frames, `s` points wide: {root, lid, body, glow (three rings behind it)}.
 local function chestArt(parent,s,z)
