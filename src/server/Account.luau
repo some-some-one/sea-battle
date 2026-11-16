@@ -28,6 +28,22 @@ function A.lookupHome(player)
  if ok and type(code)=='string'and code~=''then A.home[player.UserId]=string.upper(code)end
  return A.home[player.UserId]
 end
+-- Paid random items (Products: random=true) are not allowed for some accounts by law (Roblox's PolicyService).
+-- [userId] = true / false once Roblox has answered; unknown counts as restricted.
+A.policy={}
+function A.lookupPolicy(player)
+ if A.policy[player.UserId]~=nil then return A.policy[player.UserId]end
+ local ok,info=pcall(function()return game:GetService("PolicyService"):GetPolicyInfoForPlayerAsync(player)end)
+ if ok and type(info)=='table'then A.policy[player.UserId]=info.ArePaidRandomItemsRestricted==true end
+ return A.policy[player.UserId]
+end
+function A.randomRestricted(userId)
+ if A.policy[userId]==nil then
+  local player=Players:GetPlayerByUserId(userId)
+  if player then A.lookupPolicy(player)end
+ end
+ return A.policy[userId]~=false
+end
 -- Silver earned or spent, for the economy charts (no personal data: the player object is the key Roblox asks for).
 local SOURCES={daily=Enum.AnalyticsEconomyTransactionType.TimedReward,match_online=Enum.AnalyticsEconomyTransactionType.Gameplay,
  match_solo=Enum.AnalyticsEconomyTransactionType.Gameplay,purchase=Enum.AnalyticsEconomyTransactionType.IAP,
@@ -81,16 +97,17 @@ function A.start(event)
  A.profiles=Profiles.new(chooseStore(),{changed=push,silver=logSilver})
  local function arrive(player)
   task.spawn(A.lookupHome,player)
+  task.spawn(A.lookupPolicy,player)
   local rec=A.profiles:load(player.UserId)
   if rec and player.Parent then push(player.UserId,rec)end
  end
  Players.PlayerAdded:Connect(arrive)
  for _,player in ipairs(Players:GetPlayers())do task.spawn(arrive,player)end
- Players.PlayerRemoving:Connect(function(player)A.home[player.UserId]=nil;solo[player.UserId]=nil;soloLast[player.UserId]=nil;A.profiles:release(player.UserId)end)
+ Players.PlayerRemoving:Connect(function(player)A.home[player.UserId]=nil;A.policy[player.UserId]=nil;solo[player.UserId]=nil;soloLast[player.UserId]=nil;A.profiles:release(player.UserId)end)
  game:BindToClose(function()A.profiles:flushAll(20)end)
  -- Purchases for Robux (server/Purchases): granted in the profile's own write, reported only after it.
  MarketplaceService.ProcessReceipt=function(receipt)
-  local ok,granted=pcall(Purchases.process,A.profiles,receipt,{granted=A.purchased,home=function(userId)return A.home[userId]end})
+  local ok,granted=pcall(Purchases.process,A.profiles,receipt,{granted=A.purchased,home=function(userId)return A.home[userId]end,restricted=A.randomRestricted})
   if ok and granted then return Enum.ProductPurchaseDecision.PurchaseGranted end
   if not ok then warn("[Purchases] "..tostring(granted))end
   return Enum.ProductPurchaseDecision.NotProcessedYet

@@ -9,6 +9,11 @@
 --    gold, how much is saved, and a gold Buy button with a shine sweeping across it.
 -- The purchase is Roblox's window (Store.prompt); the grant is the server's (server/Purchases). The
 -- pattern is a legendary one only rarely (Catalog.starterPattern), which the window does not say.
+-- Where paid random items are restricted (Store.randomRestricted) the pack holds nothing drawn, and the
+-- window says what: the Anchors pattern, and the country's flag or else the Jolly Roger (Products.Starter).
+-- Elsewhere what is drawn says so: "A random water pattern" (never a common one) and, when the country is
+-- unknown or has no flag here, "Random country flag"; their pictures turn, one fading into the next, through
+-- what may come.
 local TweenService=game:GetService("TweenService")
 local Kit=require(script.Parent.Kit)
 local Icons=require(script.Parent.Icons)
@@ -97,13 +102,25 @@ function O.new(lobby)
   local tile={frame=t,holder=holder}
   if it.pattern then
    holder.BackgroundColor3=WATER
-   Flags.swatch(holder,'pat_wave',12,WATER,TINT,Z+4)
+   -- (two layers, the next pattern fades in over the last: :variant and :turn fill them)
+   tile.layers={};tile.front=1;tile.prop='GroupTransparency'
+   for k=1,2 do tile.layers[k]=make('CanvasGroup',holder,{Size=UDim2.fromScale(1,1),BackgroundTransparency=1,GroupTransparency=k==1 and 0 or 1,ZIndex=Z+4})end
+   tile.put=function(layer,id)layer:ClearAllChildren();Flags.swatch(layer,id,24,WATER,TINT,Z+4)end
   else
    tile.icon=Icons.image(holder,it.icon,24,C.white,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),ZIndex=Z+4})
+   if it.flag then
+    -- (the same two layers for the flag, hidden until the country is looked up)
+    tile.layers={};tile.front=1;tile.prop='ImageTransparency'
+    for k=1,2 do
+     local img=Flags.image(holder,Products.Starter.fixedFlag,22,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),ZIndex=Z+4})
+     img.ImageTransparency=k==1 and 0 or 1;img.Visible=false;tile.layers[k]=img
+    end
+    tile.put=function(img,id)Flags.set(img,id)end
+   end
   end
   tile.flagged=it.flag
-  label(t,it.title,13,Enum.FontWeight.Heavy,C.text,{Position=UDim2.fromOffset(62,12),Size=UDim2.fromOffset(tw-68,18),TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=Z+3})
-  label(t,it.sub,10,Enum.FontWeight.Medium,C.muted,{Position=UDim2.fromOffset(62,32),Size=UDim2.fromOffset(tw-68,16),TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=Z+3})
+  tile.title=label(t,it.title,13,Enum.FontWeight.Heavy,C.text,{Position=UDim2.fromOffset(62,12),Size=UDim2.fromOffset(tw-68,18),TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=Z+3})
+  tile.sub=label(t,it.sub,10,Enum.FontWeight.Medium,C.muted,{Position=UDim2.fromOffset(62,32),Size=UDim2.fromOffset(tw-68,16),TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=Z+3})
   self.tiles[i]=tile
  end
  -- The price row.
@@ -207,7 +224,7 @@ function O:reward(data)
   local s=make('UIScale',t,{Scale=0})
   local holder=corner(make(it.pattern and 'CanvasGroup'or 'Frame',t,{AnchorPoint=Vector2.new(0,.5),Position=UDim2.new(0,10,.5,0),Size=UDim2.fromOffset(48,48),
    BackgroundColor3=it.color:Lerp(NAVY,.6),ZIndex=Z+25}),24)
-  if it.pattern then holder.BackgroundColor3=WATER;Flags.swatch(holder,it.pattern,12,WATER,TINT,Z+26)
+  if it.pattern then holder.BackgroundColor3=WATER;Flags.swatch(holder,it.pattern,24,WATER,TINT,Z+26)
   elseif it.flag then holder.BackgroundColor3=NAVY;Flags.image(holder,it.flag,24,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),ZIndex=Z+26})
   else Icons.image(holder,it.icon,26,C.white,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),ZIndex=Z+26})end
   stroke(holder,line,.1,1.5)
@@ -248,9 +265,7 @@ function O:show(open)
    self.flagShown=true
    task.spawn(function()
     local ok,code=pcall(function()return game:GetService('LocalizationService'):GetCountryRegionForPlayerAsync(game:GetService('Players').LocalPlayer)end)
-    local id=ok and Catalog.countryFlag(code)
-    local tile=self.tiles[3]
-    if id and tile then tile.icon.Visible=false;tile.holder.BackgroundColor3=NAVY;Flags.image(tile.holder,id,22,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),ZIndex=Z+4})end
+    self.homeFlag=ok and Catalog.countryFlag(code)or false;self.variantShown=nil
    end)
   end
   self:layout(self.v.gui.AbsoluteSize)
@@ -271,8 +286,90 @@ function O:isUI(obj)
  return self.tile.Visible and(obj==self.tile or obj:IsDescendantOf(self.tile))
 end
 -- Every frame from the lobby: `menu` while the lobby's home page is up.
+-- A tile's picture on its two layers: the new one fades in over the old (instant: at once).
+local FADE=TweenInfo.new(.45,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut)
+local function picture(tile,id,instant)
+ if tile.shown==id then return end
+ tile.shown=id
+ local old,new=tile.layers[tile.front],tile.layers[3-tile.front]
+ tile.front=3-tile.front
+ tile.put(new,id)
+ if instant then old[tile.prop]=1;new[tile.prop]=0;return end
+ TweenService:Create(new,FADE,{[tile.prop]=0}):Play()
+ TweenService:Create(old,FADE,{[tile.prop]=1}):Play()
+end
+-- A tile's title on two lines (too long for one: "A random water pattern"), the line under it lower.
+local function twoLines(tile,on)
+ local w=tile.title.Size.X.Offset
+ tile.title.TextWrapped=on;tile.title.TextTruncate=on and Enum.TextTruncate.None or Enum.TextTruncate.AtEnd
+ tile.title.TextYAlignment=on and Enum.TextYAlignment.Top or Enum.TextYAlignment.Center
+ tile.title.Position=UDim2.fromOffset(62,on and 7 or 12);tile.title.Size=UDim2.fromOffset(w,on and 32 or 18)
+ tile.title.LineHeight=on and .95 or 1
+ tile.sub.Position=UDim2.fromOffset(62,on and 38 or 32)
+end
+-- What the pattern and flag tiles say and show: drawn ones turn through what may come (a pattern of rare or
+-- better not owned; a country flag not owned when the country is unknown or has none here), or, where paid
+-- random items are restricted, the fixed ones the server gives instead (server/Purchases).
+function O:variant()
+ local fixed=Store.randomRestricted()
+ local key=tostring(fixed)..':'..tostring(self.homeFlag)
+ if self.variantShown==key then return end
+ self.variantShown=key
+ local owned=self.v.profile and self.v.profile.owned or {}
+ local pattern=self.tiles[4]
+ if pattern then
+  pattern.pool=nil
+  if fixed then
+   local item=Catalog.Cosmetics[Products.Starter.fixedPattern]
+   picture(pattern,Products.Starter.fixedPattern,true)
+   pattern.title.Text=item.title..' pattern';twoLines(pattern,false)
+   pattern.sub.Text=Catalog.Rarity[item.rarity].title..' · on your water'
+  else
+   local pool=Catalog.starterPatterns(owned)
+   if #pool==0 then pool=Catalog.starterPatterns({})end
+   pattern.pool=#pool>1 and pool or nil
+   picture(pattern,pool[math.random(#pool)],true)
+   pattern.title.Text='A random water pattern';twoLines(pattern,true)
+   pattern.sub.Text='On your country\'s water'
+  end
+ end
+ local flag=self.tiles[3]
+ if flag then
+  flag.pool=nil
+  local home=self.homeFlag
+  if home==nil then return end   -- (still looking the country up: the plain icon)
+  flag.icon.Visible=false;flag.holder.BackgroundColor3=NAVY
+  if home then
+   picture(flag,home,true);flag.title.Text="Your country's flag"
+  elseif fixed then
+   picture(flag,Products.Starter.fixedFlag,true);flag.title.Text=Catalog.Cosmetics[Products.Starter.fixedFlag].title..' flag'
+  else
+   local pool={}
+   for _,id in ipairs(Catalog.CosmeticOrder)do if Catalog.Cosmetics[id].country and not owned[id]then table.insert(pool,id)end end
+   if #pool==0 then for _,id in ipairs(Catalog.CosmeticOrder)do if Catalog.Cosmetics[id].country then table.insert(pool,id)end end end
+   flag.pool=#pool>1 and pool or nil
+   picture(flag,pool[math.random(#pool)],true);flag.title.Text='Random country flag'
+  end
+ end
+end
+-- The random tiles' next picture, every TURN seconds while the window is open.
+local TURN=1.6
+function O:turn(dt)
+ self.turnClock=(self.turnClock or 0)+dt
+ if self.turnClock<TURN then return end
+ self.turnClock=0
+ for _,tile in ipairs(self.tiles)do
+  local pool=tile.pool
+  if pool then
+   local id=pool[math.random(#pool)]
+   if id==tile.shown then id=pool[(table.find(pool,id)%#pool)+1]end
+   picture(tile,id)
+  end
+ end
+end
 function O:update(dt,menu)
  self.clock+=dt
+ if self.open then self:variant();self:turn(dt)end
  local reward=self.starterReward
  if reward and reward.rays.Parent then
   reward.t+=dt

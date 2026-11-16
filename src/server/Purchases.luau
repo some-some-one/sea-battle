@@ -26,14 +26,17 @@ end
 local packRandom=Random.new()
 local function randomInt(n)return packRandom:NextInteger(1,n)end
 -- The starter pack's 'home_flag': the player's own country flag, else a random country flag not owned.
-local function homeFlag(rec,home)
+local function homeFlag(rec,home,fixed)
  local id=Catalog.countryFlag(home)
  if id then return id end
+ if fixed then return Products.Starter.fixedFlag end
  return Catalog.randomCountryFlag(rec.owned,randomInt)
 end
 -- Give `product` to the record. -> {kind, ..., refund = silver given instead (when already owned)}
--- home: the player's ISO country code when known (the starter pack's flag).
-function Pu.grant(rec,product,now,home)
+-- home: the player's ISO country code when known (the starter pack's flag). fixed: paid random items are
+-- restricted for this account (Roblox policy): the starter pack holds nothing drawn — the country's flag or
+-- Products.Starter.fixedFlag, and Products.Starter.fixedPattern.
+function Pu.grant(rec,product,now,home,fixed)
  local g=product.grants or {}
  local function silver(amount)rec.silver+=amount;rec.silverEarned+=amount;return amount end
  if g.boost then
@@ -67,8 +70,8 @@ function Pu.grant(rec,product,now,home)
   end
   local items={}
   for _,id in ipairs(pack.items)do
-   if id=='home_flag'then id=homeFlag(rec,home)
-   elseif id=='random_pattern'then id=Catalog.starterPattern(rec.owned,function()return packRandom:NextNumber()end)end
+   if id=='home_flag'then id=homeFlag(rec,home,fixed)
+   elseif id=='random_pattern'then id=fixed and Products.Starter.fixedPattern or Catalog.starterPattern(rec.owned,function()return packRandom:NextNumber()end)end
    if not id then given+=silver(Products.CosmeticRefundSilver.rare)
    elseif rec.owned[id]then given+=silver(cosmeticSilver(id))else Catalog.giveAndWear(rec,id);table.insert(items,id)end
   end
@@ -87,9 +90,11 @@ function Pu.process(profiles,receipt,hooks)
  local product=Products.byId(receipt.ProductId)
  if not product then warn("[Purchases] unknown product "..tostring(receipt.ProductId));return false end
  local userId=receipt.PlayerId;local purchaseId=tostring(receipt.PurchaseId)
+ -- (asked before the write: the write's callback must not wait)
+ local fixed=product.grants and product.grants.starter and hooks and hooks.restricted and hooks.restricted(userId)or false
  local ok,info=profiles:transact(userId,function(rec)
   if table.find(rec.receipts,purchaseId)then return true,{duplicateReceipt=true}end
-  local given=Pu.grant(rec,product,os.time(),hooks and hooks.home and hooks.home(userId))
+  local given=Pu.grant(rec,product,os.time(),hooks and hooks.home and hooks.home(userId),fixed)
   Profiles.remember(rec.receipts,purchaseId,Profiles.RECEIPTS)
   rec.paid=true
   return true,given

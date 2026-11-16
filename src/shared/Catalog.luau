@@ -197,11 +197,21 @@ end
 -- C.StarterLegendaryWeight of another (the author's rule, 2026-11-16: rare enough to stay legendary; the card
 -- does not say so). nil when every pattern is owned. random() -> 0..1.
 C.StarterLegendaryWeight=.15
+-- Never a common one (the author's rule, 2026-11-16: those are sold for silver); C.starterPatterns lists the pool
+-- for the window's turning picture.
+function C.starterPatterns(owned)
+ local ids={}
+ for _,id in ipairs(C.CosmeticOrder)do
+  local item=C.Cosmetics[id]
+  if item.kind=='pattern'and item.rarity~='common'and not(owned and owned[id])then table.insert(ids,id)end
+ end
+ return ids
+end
 function C.starterPattern(owned,random)
  local ids,weights,total={},{},0
  for _,id in ipairs(C.CosmeticOrder)do
   local item=C.Cosmetics[id]
-  if item.kind=='pattern'and not(owned and owned[id])then
+  if item.kind=='pattern'and item.rarity~='common'and not(owned and owned[id])then
    local w=item.rarity=='legendary'and C.StarterLegendaryWeight or 1
    table.insert(ids,id);table.insert(weights,w);total+=w
   end

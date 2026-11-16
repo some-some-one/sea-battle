@@ -8,7 +8,20 @@ local Store={}
 local prices={}       -- [key] = Robux from Roblox (the catalog's price until it answers)
 local asked={}
 local listeners={}
-function Store.available(key)return Products.available(key)end
+-- Paid random items (Products: random=true) are not allowed for some accounts by law (Roblox's PolicyService,
+-- ArePaidRandomItemsRestricted). Asked once; until Roblox answers, or when it cannot, they count as restricted.
+local restricted=true
+task.spawn(function()
+ local ok,info=pcall(function()return game:GetService("PolicyService"):GetPolicyInfoForPlayerAsync(Players.LocalPlayer)end)
+ restricted=not ok or type(info)~='table'or info.ArePaidRandomItemsRestricted==true
+end)
+function Store.randomRestricted()return restricted end
+-- A configured product on sale that this player may buy.
+function Store.available(key)
+ local product=Products.list[key]
+ if product and product.random and restricted then return false end
+ return Products.available(key)
+end
 -- The price in Robux: Roblox's own once it has answered (asked once, in the background), the catalog's until then.
 function Store.robux(key)
  local product=Products.list[key];if not product then return nil end
@@ -26,7 +39,7 @@ end
 function Store.label(key)local r=Store.robux(key);return r and(r..' R$')or ''end
 -- Open Roblox's purchase window for an available product.
 function Store.prompt(key)
- if not Products.available(key) then return false end
+ if not Store.available(key) then return false end
  local product=Products.list[key]
  local ok=pcall(function()MarketplaceService:PromptProductPurchase(Players.LocalPlayer,product.id)end)
  return ok

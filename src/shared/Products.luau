@@ -23,9 +23,12 @@ P.CosmeticRefundSilver={common=800,rare=2000,epic=5000,legendary=12000}
 --  * 'home_flag': the flag of the player's own country (Roblox's country code; unknown or not in the
 --    catalog: a random country flag the player does not own);
 --  * 'random_pattern': a random pattern the player does not own, a legendary one far less often
---    (Catalog.starterPattern; the card only says "a pattern");
+--    (Catalog.starterPattern; never a common one; the card says "A random water pattern");
 --  * arsenal unlocks: the torpedo (its key is still "depthbomb") and the cluster missile.
-P.Starter={silver=5000,boost='silver2x',items={'home_flag','random_pattern'},unlocks={'depthbomb','cluster'},hours=48}
+P.Starter={silver=5000,boost='silver2x',items={'home_flag','random_pattern'},unlocks={'depthbomb','cluster'},hours=48,
+ -- where paid random items are restricted (the author's rule, 2026-11-16): the country's flag, else this one,
+ -- and this pattern, instead of drawn ones
+ fixedFlag='flag_jolly',fixedPattern='pat_anchors'}
 -- Silver given instead when a receipt arrives for something the account already has.
 P.DuplicateSilver={silver2x=5000}
 local productIds={
@@ -123,10 +126,13 @@ P.list={
  -- `chest_first`, which the window offers instead of chest_1 until P.ChestFirstLimit is reached; the packs
  -- stay cheaper per key. (The product keys and ids are the chests' ones; Roblox's product names are
  -- changed by hand in the Creator Dashboard: docs/products.md.)
- chest_1={robux=39,title='Golden Key',grants={credit='key'},count=1,enabled=true},
- chest_first={robux=15,title='Golden Key (first two)',grants={credit='key'},count=1,firstChest=true,enabled=true},
- chest_3={robux=99,title='3 Golden Keys',grants={credit='key'},count=3,enabled=true},
- chest_10={robux=299,title='10 Golden Keys',grants={credit='key'},count=10,enabled=true},
+ -- `random=true`: a paid random item in Roblox's sense (a key opens a random chest). Players whose Roblox policy
+ -- restricts paid random items are never offered them (shared/Store). The starter pack is sold to everyone: for
+ -- them it holds nothing random (P.Starter.fixedFlag / fixedPattern).
+ chest_1={robux=39,title='Golden Key',grants={credit='key'},count=1,enabled=true,random=true},
+ chest_first={robux=15,title='Golden Key (first two)',grants={credit='key'},count=1,firstChest=true,enabled=true,random=true},
+ chest_3={robux=99,title='3 Golden Keys',grants={credit='key'},count=3,enabled=true,random=true},
+ chest_10={robux=299,title='10 Golden Keys',grants={credit='key'},count=10,enabled=true,random=true},
 }
 P.ChestOffers={'chest_1','chest_3','chest_10'}
 P.ChestFirstLimit=2

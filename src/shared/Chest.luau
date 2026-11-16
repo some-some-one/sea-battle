@@ -159,7 +159,7 @@ function K.new(lobby)
  for i,key in ipairs(Products.ChestOffers)do
   local o={key=key}
   o.button=pressable(self.card,{Name=key,Position=UDim2.fromOffset(308+(i-1)*(ow+8),268),Size=UDim2.fromOffset(ow,114),BackgroundColor3=C.tile,ZIndex=Z+2},function()
-   if self.restricted then Sfx.play('deny');self:say('Chest purchases are not available for your account');return end
+   if Store.randomRestricted() then Sfx.play('deny');self:say('Key purchases are not available for your account');return end
    -- (the single chest is the first-price product while the account still has some at 15)
    if not self.busy and not self.show then Store.prompt(i==1 and self:singleKey()or key)end
   end)
@@ -179,15 +179,6 @@ function K.new(lobby)
  end
  self:buildShow()
  self:buildOdds()
- -- Paid random items are not allowed for some accounts (Roblox's PolicyService): the offers turn off,
- -- chests already owned still open. (Until Roblox answers they count as off.)
- self.restricted=true
- task.spawn(function()
-  local ok,info=pcall(function()
-   return game:GetService('PolicyService'):GetPolicyInfoForPlayerAsync(game:GetService('Players').LocalPlayer)
-  end)
-  self.restricted=not ok or type(info)~='table'or info.ArePaidRandomItemsRestricted==true
- end)
  Store.onFinished(function(key,purchased)
   if self.open and purchased and key and string.sub(key,1,6)=='chest_'then Sfx.play('build');self:say('Paid, the keys are yours')end
  end)
@@ -289,7 +280,7 @@ function K:openOne()
  -- A chest but no key: the button buys one (the single key's offer).
  if self:keys()<1 then
   if self.show then self:endShow()end
-  if self.restricted then Sfx.play('deny');self:say('Key purchases are not available for your account');return end
+  if Store.randomRestricted() then Sfx.play('deny');self:say('Key purchases are not available for your account');return end
   Store.prompt(self:singleKey());return
  end
  self.busy=true
@@ -459,7 +450,7 @@ function K:update(dt)
  self.left.TextColor3=firstLeft>0 and C.amber or C.muted
  -- The open button and the idle chest.
  local ready=math.min(n,keys)
- self.openText.Text=ready>1 and('OPEN ('..ready..')')or ready==1 and 'OPEN'or n>0 and('BUY A KEY · '..Store.label(self:singleKey()))or 'WIN MATCHES FOR CHESTS'
+ self.openText.Text=ready>1 and('OPEN ('..ready..')')or ready==1 and 'OPEN'or n>0 and(Store.randomRestricted()and 'NEED A GOLDEN KEY'or('BUY A KEY · '..Store.label(self:singleKey())))or 'WIN MATCHES FOR CHESTS'
  self.openText.TextSize=ready>0 and 18 or 15
  self.openButton.Active=n>0 and not self.busy
  self.openText.TextTransparency=n>0 and 0 or .45
@@ -473,8 +464,8 @@ function K:update(dt)
   local first=key=='chest_first'
   local available=Store.available(key)
   local price=Store.robux(key)
-  o.priceText.Text=self.restricted and 'Unavailable'or available and(price..' R$')or 'Soon'
-  o.button.Active=available and not self.restricted and not self.busy and not self.show
+  o.priceText.Text=Store.randomRestricted() and 'Unavailable'or available and(price..' R$')or 'Soon'
+  o.button.Active=available and not Store.randomRestricted() and not self.busy and not self.show
   -- The first-price chest in gold, the rest in the window's own colours.
   o.button.BackgroundColor3=first and C.amber or C.tile
   o.stroke.Color=first and Color3.fromRGB(255,230,170)or C.robux;o.stroke.Transparency=first and .1 or .55
