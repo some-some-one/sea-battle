@@ -17,19 +17,19 @@ local Catalog=require(shared.Catalog)
 local Profiles=require(script.Parent.Profiles)
 
 local Pu={}
--- The silver a cosmetic is worth when it arrives again (cosmetics have no silver price since 2026-11-12).
+-- The silver a cosmetic is worth when it arrives again: by rarity (a common pattern's silver price is not
+-- used here, so a duplicate is worth the same whatever it costs in the shop).
 local function cosmeticSilver(id)
  local item=Catalog.Cosmetics[id]
- return item and(item.silver or Products.CosmeticRefundSilver[item.rarity])or Products.CosmeticRefundSilver.rare
+ return item and Products.CosmeticRefundSilver[item.rarity]or Products.CosmeticRefundSilver.rare
 end
--- The starter pack's 'home_flag': the player's own country flag, else the first country flag not owned.
+local packRandom=Random.new()
+local function randomInt(n)return packRandom:NextInteger(1,n)end
+-- The starter pack's 'home_flag': the player's own country flag, else a random country flag not owned.
 local function homeFlag(rec,home)
  local id=Catalog.countryFlag(home)
  if id then return id end
- for _,cid in ipairs(Catalog.CosmeticOrder)do
-  if Catalog.Cosmetics[cid].country and not rec.owned[cid]then return cid end
- end
- return nil
+ return Catalog.randomCountryFlag(rec.owned,randomInt)
 end
 -- Give `product` to the record. -> {kind, ..., refund = silver given instead (when already owned)}
 -- home: the player's ISO country code when known (the starter pack's flag).
@@ -61,13 +61,23 @@ function Pu.grant(rec,product,now,home)
   if s.used then return {kind='starter',refund=silver(pack.silver)}end
   s.used=true;rec.starter=s
   local given=silver(pack.silver)
-  for _,id in ipairs(pack.items)do
-   if id=='home_flag'then id=homeFlag(rec,home)end
-   -- (an item already owned, or no flag left to give, turns into silver)
-   if not id then given+=silver(Products.CosmeticRefundSilver.rare)
-   elseif rec.owned[id]then given+=silver(cosmeticSilver(id))else rec.owned[id]=true end
+  -- (anything already owned, or nothing left of a kind to give, turns into silver)
+  if pack.boost then
+   if rec.boosts[pack.boost]then given+=silver(Products.DuplicateSilver[pack.boost]or 0)else rec.boosts[pack.boost]=true end
   end
-  return {kind='starter',silver=given}
+  local items={}
+  for _,id in ipairs(pack.items)do
+   if id=='home_flag'then id=homeFlag(rec,home)
+   elseif id=='random_pattern'then id=Catalog.starterPattern(rec.owned,function()return packRandom:NextNumber()end)end
+   if not id then given+=silver(Products.CosmeticRefundSilver.rare)
+   elseif rec.owned[id]then given+=silver(cosmeticSilver(id))else Catalog.giveAndWear(rec,id);table.insert(items,id)end
+  end
+  local unlocked=false
+  for _,key in ipairs(pack.unlocks or {})do
+   local item=Catalog.Arsenal[key]
+   if rec.unlocks[key]then given+=silver(item and item.silver or 0)else rec.unlocks[key]=true;unlocked=true end
+  end
+  return {kind='starter',silver=given,items=items,unlocked=unlocked}
  end
  return {kind='nothing'}
 end

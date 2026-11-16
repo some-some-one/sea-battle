@@ -111,6 +111,7 @@ function A.command(player,action,value)
  if action=="takeover_use"then return A.takeoverUse(player.UserId,os.clock())end
  if action=="chest_open"then return A.openChest(player.UserId)end
  if action=="music"then return A.setMusic(player.UserId,type(value)=='table'and value.on)end
+ if action=="tutorial"then return A.tutorialSeen(player.UserId)end
  if action=="solo_started"then
   local difficulty=type(value)=='table'and value.difficulty
   if difficulty~='easy'and difficulty~='hard'then difficulty='normal'end
@@ -127,15 +128,19 @@ function A.purchased(userId,product,info)
  if info.kind=='starter'then
   if info.silver then logSilver(userId,info.silver,"purchase",rec and rec.silver or 0)end
   logEvent(userId,"StarterPackBought")
+  -- (its torpedo and cluster missile: a country already in a match has them at once)
+  if info.unlocked and A.unlocksChanged then A.unlocksChanged(userId)end
+  -- (what came out of it, for the client's reward window: the flag and the pattern drawn, the silver)
+  tell(userId,{starter={items=info.items,silver=info.silver}})
  end
 end
 -- The starter pack is being shown for the first time: its 48 hours start now (kept in the record).
 function A.starterSeen(userId,now)
  local rec=A.profiles:load(userId)
  if not rec then return {ok=false,reason="store"}end
- if rec.starter or rec.paid or not Products.available('starter_pack')then return {ok=false,reason="invalid",profile=Profiles.view(rec)}end
+ if rec.starter or not Products.available('starter_pack')then return {ok=false,reason="invalid",profile=Profiles.view(rec)}end
  local ok=A.profiles:transact(userId,function(r)
-  if r.starter or r.paid then return false end
+  if r.starter then return false end
   r.starter={started=now,ends=now+Products.Starter.hours*3600,used=false}
   return true
  end)
@@ -157,15 +162,16 @@ function A.takeoverUse(userId,clock)
  A.soloStarted(userId,difficulty,clock)
  return {ok=true,reason="takeover",profile=Profiles.view(A.profiles:get(userId))}
 end
--- Open one bought chest: the server draws the item (Catalog.chestRoll) in the same write that spends the
--- chest, so a chest is never lost and never gives twice. Nothing left to give: Catalog.ChestSilver instead.
+-- Open one chest with one golden key: the server draws the item (Catalog.chestRoll) in the same write that
+-- spends both, so they are never lost and never give twice. Nothing left to give: Catalog.ChestSilver instead.
 local chestRandom=Random.new()
 function A.openChest(userId)
  local ok,given,rec=A.profiles:transact(userId,function(r)
   if(r.credits.chest or 0)<1 then return false,'no_chest'end
-  r.credits.chest-=1
+  if(r.credits.key or 0)<1 then return false,'no_key'end
+  r.credits.chest-=1;r.credits.key-=1
   local id=Catalog.chestRoll(r.owned,function()return chestRandom:NextNumber()end,function(n)return chestRandom:NextInteger(1,n)end)
-  if id then r.owned[id]=true;return true,{item=id}end
+  if id then Catalog.giveAndWear(r,id);return true,{item=id}end
   r.silver+=Catalog.ChestSilver;r.silverEarned+=Catalog.ChestSilver
   return true,{silver=Catalog.ChestSilver}
  end)
@@ -208,6 +214,13 @@ function A.setMusic(userId,on)
  A.profiles:softChange(userId,function(r)r.music=on~=false end)
  return {ok=true,reason="music",profile=Profiles.view(A.profiles:get(userId))}
 end
+-- The newcomer's tutorial is over (done, skipped or left): not money, written a little later.
+function A.tutorialSeen(userId)
+ local rec=A.profiles:load(userId)
+ if not rec then return {ok=false,reason="store"}end
+ A.profiles:softChange(userId,function(r)r.tutorial=true end)
+ return {ok=true,reason="tutorial",profile=Profiles.view(A.profiles:get(userId))}
+end
 -- Wear an owned cosmetic in its slot, or take it off (id == nil or false). Not money: written a little later.
 function A.equip(userId,slot,id)
  if type(slot)~='string'or not Catalog.Slots[slot]then return {ok=false,reason="invalid"}end
@@ -230,7 +243,10 @@ function A.dress(userId,faction)
 end
 -- Silver for a finished match, once for `payoutId` (the same id from any server is ignored), with the
 -- match counted in the player's statistics. pay: Economy.payout's {lines, total}. -> granted (0 for a repeat), or nil.
-function A.payMatch(userId,pay,reason,payoutId,won)
+-- drops: the match for Catalog.chestDrops (drawn here, in the same write, so a repeat gives nothing);
+-- what fell is written into pay.chests / pay.keys for the end card.
+local dropRandom=Random.new()
+function A.payMatch(userId,pay,reason,payoutId,won,drops)
  local amount=math.max(0,math.floor(pay.total or 0))
  local ok,granted,rec=A.profiles:transact(userId,function(rec)
   if table.find(rec.payouts,payoutId)then return false,0 end
@@ -238,6 +254,12 @@ function A.payMatch(userId,pay,reason,payoutId,won)
   rec.silver+=amount;rec.silverEarned+=amount
   rec.stats.matches=(rec.stats.matches or 0)+1
   if won then rec.stats.wins=(rec.stats.wins or 0)+1 end
+  if drops then
+   if drops.kind=='solo'then drops.first=not rec.firstSolo;rec.firstSolo=true end
+   local chests,keys=Catalog.chestDrops(drops,function()return dropRandom:NextNumber()end)
+   rec.credits.chest=(rec.credits.chest or 0)+chests;rec.credits.key=(rec.credits.key or 0)+keys
+   pay.chests,pay.keys=chests,keys
+  end
   return true,amount
  end)
  if ok==nil then return nil end
@@ -250,7 +272,7 @@ function A.payOnline(userId,result,payoutId)
  local rec=A.profiles:load(userId)
  if not rec then return nil end
  local pay=Economy.payout(result,{kind='online'},rec.boosts)
- local granted=A.payMatch(userId,pay,"match_online",payoutId,result.won)
+ local granted=A.payMatch(userId,pay,"match_online",payoutId,result.won,{kind='online',place=result.place,quit=result.quit,won=result.won})
  if granted and granted>0 then tell(userId,{payout=pay})end
  -- (paid after the player had left: their copy was loaded only for this)
  if not Players:GetPlayerByUserId(userId)then A.profiles:release(userId)end
@@ -268,8 +290,10 @@ function A.soloResult(userId,report,clock)
  solo[userId]=nil;soloLast[userId]=started.difficulty
  local rec=A.profiles:load(userId)
  if not rec then return {ok=false,reason="store"}end
- local pay,result=Economy.soloPayout(report,(clock-started.at)/60,started.difficulty,rec.boosts)
- local granted=A.payMatch(userId,pay,"match_solo","solo:"..game.JobId..":"..userId..":"..started.id,result.won)
+ local realMinutes=(clock-started.at)/60
+ local pay,result=Economy.soloPayout(report,realMinutes,started.difficulty,rec.boosts)
+ local granted=A.payMatch(userId,pay,"match_solo","solo:"..game.JobId..":"..userId..":"..started.id,result.won,
+  {kind='solo',difficulty=started.difficulty,won=result.won,quit=result.quit,realMinutes=realMinutes})
  if granted==nil then return {ok=false,reason="store"}end
  return {ok=true,reason="solo_paid",payout=pay,profile=Profiles.view(A.profiles:get(userId)or rec)}
 end
@@ -285,7 +309,7 @@ function A.claimDaily(userId,unixTime)
   local silver=reward.silver
   if reward.prize then
    local item=Catalog.dailyPrize(rec.owned,home,function(n)return prizeRandom:NextInteger(1,n)end)
-   if item then rec.owned[item]=true;reward.item=item
+   if item then Catalog.giveAndWear(rec,item);reward.item=item
    else silver+=Daily.PrizeFallback;reward.bonus=Daily.PrizeFallback end
   end
   rec.silver+=silver;rec.silverEarned+=silver;reward.total=silver

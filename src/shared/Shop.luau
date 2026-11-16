@@ -27,7 +27,7 @@ local TABS={{key='arsenal',title='Arsenal',icon='rocket'},{key='flag',title='Fla
 local OFFERS={
  {id='silver2x',product='silver2x',icon='bolt',color=Color3.fromRGB(255,206,96),title='×2 Silver',sub='Forever: twice as much from every match'},
  {id='starter_pack',product='starter_pack',icon='gift',color=Color3.fromRGB(176,140,255),title='Starter Pack',
-  sub=compact(Products.Starter.silver)..' silver, your country\'s flag and a pattern'},
+  sub='×2 silver, '..compact(Products.Starter.silver)..' silver, a flag, a pattern, torpedo and cluster missile'},
 }
 local WATER,TINT=Color3.fromRGB(58,120,150),Color3.fromRGB(110,170,196)
 local REASONS={silver='Not enough silver',owned='Already bought',store='Could not save. Try again.',
@@ -92,7 +92,7 @@ end
 function S:addCard(item,order)
  local rarity=Catalog.Rarity[item.rarity]or Catalog.Rarity.common
  local frame=corner(make('Frame',self.list,{Name=item.id,BackgroundColor3=C.tile,LayoutOrder=order,ZIndex=Z+3}),14)
- local c={item=item,frame=frame,stroke=stroke(frame,rgb(rarity.color),.55,1)}
+ local c={item=item,frame=frame,stroke=stroke(frame,rgb(rarity.color),.55,1),baseOrder=order}
  make('UIGradient',frame,{Rotation=90,Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(185,190,200))})
  -- The thing itself: a flag, or a piece of water with the pattern on it.
  c.preview=corner(make('Frame',frame,{Name='Preview',AnchorPoint=Vector2.new(.5,0),Position=UDim2.new(.5,0,0,10),BackgroundColor3=C.ink,BackgroundTransparency=.35,ClipsDescendants=true,ZIndex=Z+4}),10)
@@ -114,7 +114,7 @@ function S:addCard(item,order)
  c.robuxText=label(c.robux,'',12,Enum.FontWeight.Heavy,C.robux,{Size=UDim2.fromScale(1,1),TextXAlignment=Enum.TextXAlignment.Center})
  -- (country flags have a tab of their own; the player's own country comes first there)
  c.tab = item.kind
- if item.country then task.spawn(function()if homeCountry()==item.country then frame.LayoutOrder=-1;c.rarity.Text='Your country'end end)end
+ if item.country then task.spawn(function()if homeCountry()==item.country then c.baseOrder=-1;c.rarity.Text='Your country'end end)end
  table.insert(self.cards,c)
  return c
 end
@@ -135,7 +135,7 @@ function S:buildArsenal()
    if self.pick~=key then self.pick=key;self.confirm=nil;Sfx.play('click')end
   end)
   corner(row,12)
-  local r={row=row,item=item,stroke=stroke(row,C.white,.85,1)}
+  local r={row=row,item=item,stroke=stroke(row,C.white,.85,1),baseOrder=order}
   r.badge=Kit.badge(row,item.icon,34,color,UDim2.fromOffset(7,7))
   r.title=label(row,item.title,13,Enum.FontWeight.Bold,C.text,{Position=UDim2.fromOffset(48,6),Size=UDim2.new(1,-54,0,18),TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=Z+4})
   r.status=label(row,'',11,Enum.FontWeight.Bold,C.silver,{Position=UDim2.fromOffset(48,24),Size=UDim2.new(1,-54,0,16),ZIndex=Z+4})
@@ -314,6 +314,9 @@ end
 function S:updateArsenal(p,unlocks,silver)
  for key,r in pairs(self.rows)do
   local on=key==self.pick;local has=unlocks[key]==true
+  -- (what is opened stands at the top of the list, 2026-11-16, by the author's request)
+  local order=(has and -1000 or 0)+r.baseOrder
+  if r.row.LayoutOrder~=order then r.row.LayoutOrder=order end
   r.row.BackgroundColor3=on and C.tileOn or C.tile
   r.stroke.Color=on and C.accent or C.white;r.stroke.Transparency=on and 0 or .85;r.stroke.Thickness=on and 2 or 1
   local status=has and 'Unlocked'or('Silver '..compact(r.item.silver))
@@ -384,6 +387,10 @@ function S:update(dt)
    continue
   end
   local item=c.item
+  -- (what the player owns — bought, from a chest or a reward — stands at the top of its tab, in catalog
+  -- order; 2026-11-16, by the author's request)
+  local order=(owned[item.id]and -100000 or 0)+(c.baseOrder or 0)
+  if c.frame.LayoutOrder~=order then c.frame.LayoutOrder=order end
   local forRobux=not owned[item.id]and Store.available(c.product)
   local buyable=owned[item.id]or item.silver~=nil or forRobux
   if buyable then tabShown[c.tab]=true end

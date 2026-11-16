@@ -129,14 +129,25 @@ function M.install(Game)
  function Game:fortified(owner,cell)
   local cache=self.defenseCache
   if not cache or cache.revision~=self.structureRevision or cache.time~=self.time or cache.count~=#self.structures then
+   -- (by owner, then in buckets of 32×32 cells: DefenseRange is under 32, so the 3×3 buckets around a
+   -- cell hold every post that can reach it; a country with dozens of posts asked them all per cell)
    cache={revision=self.structureRevision,time=self.time,count=#self.structures,by={}}
+   local w=self.grid.width
    for _,s in ipairs(self.structures)do
-    if s.kind=='defense'and self:activeStructure(s)then local list=cache.by[s.owner];if not list then list={};cache.by[s.owner]=list end;table.insert(list,s)end
+    if s.kind=='defense'and self:activeStructure(s)then
+     local buckets=cache.by[s.owner];if not buckets then buckets={};cache.by[s.owner]=buckets end
+     local key=bucketKey(((s.cell-1)%w)//32,((s.cell-1)//w)//32)
+     local list=buckets[key];if not list then list={};buckets[key]=list end;table.insert(list,s)
+    end
    end
    self.defenseCache=cache
   end
-  local list=cache.by[owner];if not list then return false end
-  for _,s in ipairs(list)do if self:distance(cell,s.cell)<=R.DefenseRange then return true end end
+  local buckets=cache.by[owner];if not buckets then return false end
+  local w=self.grid.width;local bx,by=((cell-1)%w)//32,((cell-1)//w)//32
+  for yy=by-1,by+1 do for xx=bx-1,bx+1 do
+   local list=buckets[bucketKey(xx,yy)]
+   if list then for _,s in ipairs(list)do if self:distance(cell,s.cell)<=R.DefenseRange then return true end end end
+  end end
   return false
  end
  -- Ends one order (`enemy`: its target, 0 for neutral expansion) or, without `enemy`, all of them.

@@ -21,6 +21,8 @@ local DailyCard=require(script.Parent.DailyCard)
 local Shop=require(script.Parent.Shop)
 local Chest=require(script.Parent.Chest)
 local PartyPanel=require(script.Parent.PartyPanel)
+local Tutorial=require(script.Parent.Tutorial)
+local StarterOffer=require(script.Parent.StarterOffer)
 local Economy=require(script.Parent.Economy)
 local Store=require(script.Parent.Store)
 -- Camera zoom after the start (1 = whole world; Home flies to .3): close over the new country.
@@ -307,8 +309,12 @@ function L.new(view)
  self.daily=DailyCard.new(self)
  self.shop=Shop.new(self)
  self.chest=Chest.new(self)
+ -- The starter pack's own window and the gold tile at the lobby's left edge (shared/StarterOffer).
+ self.starterOffer=StarterOffer.new(self)
  -- The party (shared/PartyPanel): its own button at the top right.
  self.party=PartyPanel.new(self)
+ -- A new player's first match (shared/Tutorial), started by L:update.
+ self.tutorial=Tutorial.new(view)
  -- The online search: the server says how it goes (queued, teleporting, failed).
  self.queue={state='idle'}
  -- Back from an online match with "Play again": the search starts again by itself (L:update).
@@ -515,7 +521,10 @@ function L:updateEnd()
  local pay=v.payout
  local waited=os.clock()-self.endAt
  self.endSilver.Visible=pay~=nil or waited>2
- self.endSilverText.Text=pay and('+'..compact(pay.total)..' silver')or 'silver on its way…'
+ local loot=''
+ if pay and(pay.chests or 0)>0 then loot='  ·  +'..pay.chests..(pay.chests==1 and ' chest'or ' chests')end
+ if pay and(pay.keys or 0)>0 then loot..='  ·  +'..pay.keys..' key'end
+ self.endSilverText.Text=pay and('+'..compact(pay.total)..' silver'..loot)or 'silver on its way…'
  local shownLines=pay and(self.endOpen or self.endHover)and #pay.lines>0
  local y=176+(self.endSilver.Visible and 38 or 0)
  for i,row in ipairs(self.endLines)do
@@ -698,6 +707,16 @@ function L:update(dt)
  if self:role()=="match"and self.queue.state~='idle'then self.queue={state='idle'}end
  if self.queue.state=='teleporting'and self.queueAt and os.clock()-self.queueAt>30 then self.queue={state='failed'}end
  if self.pendingSolo and self.mode=='menu'and v.localMatch.ready then self:startSolo()end
+ -- A newcomer (no match played, the tutorial never seen) goes straight into the tutorial's solo match
+ -- on Easy, once the profile is here: only on a lobby server, from the lobby, outside a party.
+ local p=v.profile
+ if not self.tutorialChecked and p and self.mode=='menu'and v.localMatch.ready and self:role()=="hub"then
+  self.tutorialChecked=true
+  if not p.tutorial and(p.stats and p.stats.matches or 0)==0 and not self.party:inParty()and self.queue.state=='idle'and not self.searchAgain then
+   self.difficulty='easy';self.tutorial:begin();self:startSolo()
+  end
+ end
+ self.tutorial:update(dt,self)
  if self.searchAgain and self.mode=='menu'and self:role()=="hub"and self:onlineState()=='idle'then self.searchAgain=false;self:choose('online')end
  local state=self:onlineState()
  -- Arriving on a match server (or Studio turning into one): straight to the start banner.
@@ -749,13 +768,19 @@ function L:update(dt)
    self.bannerText.Text=live.playerId and('Coast chosen · players: '..self:humans())or 'Tap a free coast'
   elseif self.playing=='online'then
    self.bannerTitle.Text='ONLINE · PICK YOUR START';self.bannerText.Text='Match on · players: '..self:humans()
+  elseif self.tutorial.active then self.bannerTitle.Text='PICK YOUR START';self.bannerText.Text='Tap the marked coast'
   else self.bannerTitle.Text='PICK YOUR START';self.bannerText.Text='Tap a free coast'end
   self.random.Visible=not(self.playing=='online'and live.playerId)
  end
  -- (the shop stays: the match's own shop button opens it over the map)
  self.shop:update(dt)
  self.chest:update(dt)
- if not menu then if self.daily.open then self.daily:show(false)end;if self.chest.open then self.chest:setOpen(false)end;return end
+ self.starterOffer:update(dt,menu and self.page=='home')
+ if not menu then
+  if self.daily.open then self.daily:show(false)end;if self.chest.open then self.chest:setOpen(false)end
+  if self.starterOffer.open then self.starterOffer:show(false)end
+  return
+ end
  -- Chests waiting: a count on the chest buttons.
  do
   local n=v.profile and v.profile.credits and v.profile.credits.chest or 0
@@ -778,6 +803,12 @@ function L:update(dt)
  self.dailyDot.Visible=waiting;self.sDailyDot.Visible=waiting
  if waiting and not self.dailyOffered and not self.searchAgain and state=='idle'and self.clock>1 then self.dailyOffered=true;self.daily:show(true)end
  self.daily:update(dt)
+ -- The starter pack opens by itself once a visit while it is on offer, after the daily reward's window
+ -- (when today's reward waits, that one comes first) and when nothing else is open.
+ if not self.starterAutoShown and self.clock>1.5 and state=='idle'and not self.searchAgain and not self.daily.open and not(waiting and not self.dailyOffered)
+  and not self.shop.open and not self.chest.open and not self.tutorial.active and not self.starterOffer.rewardLayer and self.starterOffer:available()then
+  self.starterAutoShown=true;self.starterOffer:show(true)
+ end
  if silverText~=self.silverText then
   self.silverText=silverText
   for _,w in ipairs({self.wallet,self.stripWallet})do
@@ -839,9 +870,11 @@ function L:covers()return self.mode=='menu'or self.mode=='spawn'end
 function L:isUI(obj)
  if self.endShown then return true end
  if self.shop.open or self.chest.open then return true end
+ if self.starterOffer:isUI(obj)then return true end
  if self.root.Visible and(obj==self.root or obj:IsDescendantOf(self.root))then return true end
  if self.banner.Visible and(obj==self.banner or obj:IsDescendantOf(self.banner))then return true end
  if self.homeButton.Visible and(obj==self.homeButton or obj:IsDescendantOf(self.homeButton))then return true end
+ if self.tutorial:isUI(obj)then return true end
  return false
 end
 return L

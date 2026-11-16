@@ -29,6 +29,10 @@ function M.new(view)
  -- always running behind at its fast speed, would otherwise take its whole share every frame and the
  -- lobby would stutter — it runs a little slower instead.
  self.soloBudget=mobile and .005 or .007
+ -- A solo step that does not fit (several big attacks at once: hundreds of cells a step) may take a
+ -- little more of the frame while it lasts, up to soloBudgetMax, instead of the match slowing down: a
+ -- slowed match moved planes and ships in jerks (2026-11-16, iPhone 7). Back to soloBudget once it keeps up.
+ self.soloBudgetMax=mobile and .008 or .010
  -- (a phone gets the same 4 ms as a computer since 2026-11-13: the demo plays at the same speed; before
  -- it had 2.5 ms and 60% of the speed)
  self.demoBudget=.004
@@ -169,6 +173,10 @@ function M:update(dt)
  if not self.job then self:sync()end
  -- A device that cannot keep up drops the time it is behind instead of piling it up.
  if self.job and self.accumulator>STEP then self.accumulator=STEP*.99 end
+ if self.kind=='solo'and not paused then
+  local behind=self.job~=nil and self.accumulator>=STEP*.5
+  self.budget=math.clamp(self.budget+(behind and .0005 or -.00025),self.soloBudget,self.soloBudgetMax)
+ end
  if g.phase~='playing'then self.accumulator=0 end
  -- The speed actually reached: units are drawn this much match time behind the clock.
  local rate=math.max(0,self:clock()-before)/math.max(dt,1e-3)

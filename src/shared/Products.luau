@@ -1,8 +1,9 @@
 --!nonstrict
 -- Developer products for the Sea-battle experience (10774174567). The Creator Dashboard names and
 -- base prices are in docs/products.md. Missing IDs and paused sales disable purchase offers.
---   grants: boost = a permanent boost; cosmetic = one cosmetic; credit = a thing bought and used later;
---           starter = the starter pack (once per account, only before any other purchase, 48 hours from
+--   grants: boost = a permanent boost; cosmetic = one cosmetic; credit = a thing bought and used later
+--           (a golden key, a takeover);
+--           starter = the starter pack (once per account, other purchases or not, 48 hours from
 --           its first showing); unlock = an arsenal item (the same one silver opens — only sooner).
 -- The author's rule: nothing that works in an online match is Robux only (tests/CatalogQA).
 local Catalog=require(script.Parent.Catalog)
@@ -16,10 +17,15 @@ P.PictureFlagRobux=59
 -- Silver given for a cosmetic that arrives again (a receipt for one already owned, a starter pack item):
 -- cosmetics have no silver price any more, so by rarity.
 P.CosmeticRefundSilver={common=800,rare=2000,epic=5000,legendary=12000}
--- The starter pack's contents.
--- 'home_flag': the flag of the player's own country (Roblox's country code; unknown or not in the catalog:
--- the first country flag in catalog order the player does not own).
-P.Starter={silver=5000,items={'home_flag','pat_grid'},hours=48}
+-- The starter pack's contents (2026-11-16, by the author's request: 249 Robux, shown in its own window in
+-- the lobby for its 48 hours — shared/StarterOffer):
+--  * silver, and the ×2 silver boost;
+--  * 'home_flag': the flag of the player's own country (Roblox's country code; unknown or not in the
+--    catalog: a random country flag the player does not own);
+--  * 'random_pattern': a random pattern the player does not own, a legendary one far less often
+--    (Catalog.starterPattern; the card only says "a pattern");
+--  * arsenal unlocks: the torpedo (its key is still "depthbomb") and the cluster missile.
+P.Starter={silver=5000,boost='silver2x',items={'home_flag','random_pattern'},unlocks={'depthbomb','cluster'},hours=48}
 -- Silver given instead when a receipt arrives for something the account already has.
 P.DuplicateSilver={silver2x=5000}
 local productIds={
@@ -97,21 +103,34 @@ local productIds={
  cos_pat_anchors=3730587518,
  cos_pat_stars=3730587529,
  cos_pat_whirlpool=3730587542,
+ cos_pat_rain=3732223099,
+ cos_pat_dashes=3732223334,
+ cos_pat_triangles=3732223537,
+ cos_pat_weave=3732223673,
+ cos_pat_rings=3732223752,
+ cos_pat_fish=3732223900,
+ cos_pat_shells=3732223999,
+ cos_pat_wheel=3732224080,
+ cos_pat_kraken=3732224186,
+ cos_pat_lighthouse=3732224277
 }
 P.list={
  silver2x={robux=199,title='×2 Silver Forever',grants={boost='silver2x'}},
- starter_pack={robux=99,title='Starter Pack',grants={starter=true}},
+ starter_pack={robux=249,title='Starter Pack',grants={starter=true}},
  takeover={robux=25,title='Take Command',grants={credit='takeover'},count=1},
- -- Chests (2026-11-12): one 39; the first two an account buys cost 15 each through `chest_first`, which the
- -- window offers instead of chest_1 until P.ChestFirstLimit is reached; the packs stay cheaper per chest.
- chest_1={robux=39,title='Chest',grants={credit='chest'},count=1,enabled=true},
- chest_first={robux=15,title='Chest (first two)',grants={credit='chest'},count=1,firstChest=true,enabled=true},
- chest_3={robux=99,title='3 Chests',grants={credit='chest'},count=3,enabled=true},
- chest_10={robux=299,title='10 Chests',grants={credit='chest'},count=10,enabled=true},
+ -- Golden keys (2026-11-16; before, the same products sold chests): a key opens one chest, and chests drop
+ -- from matches (Catalog.chestDrops). One 39; the first two an account buys cost 15 each through
+ -- `chest_first`, which the window offers instead of chest_1 until P.ChestFirstLimit is reached; the packs
+ -- stay cheaper per key. (The product keys and ids are the chests' ones; Roblox's product names are
+ -- changed by hand in the Creator Dashboard: docs/products.md.)
+ chest_1={robux=39,title='Golden Key',grants={credit='key'},count=1,enabled=true},
+ chest_first={robux=15,title='Golden Key (first two)',grants={credit='key'},count=1,firstChest=true,enabled=true},
+ chest_3={robux=99,title='3 Golden Keys',grants={credit='key'},count=3,enabled=true},
+ chest_10={robux=299,title='10 Golden Keys',grants={credit='key'},count=10,enabled=true},
 }
 P.ChestOffers={'chest_1','chest_3','chest_10'}
 P.ChestFirstLimit=2
--- How many chests at the first price this profile may still buy.
+-- How many keys at the first price this profile may still buy (the field keeps its old name).
 function P.chestFirstLeft(profile)
  return math.max(0,P.ChestFirstLimit-(profile and profile.chestFirst or 0))
 end
@@ -133,15 +152,26 @@ function P.byId(productId)
  for _,product in pairs(P.list)do if product.id==productId then return product end end
  return nil
 end
+-- What the starter pack's things cost one by one in Robux (the pattern at the cheapest price; silver at
+-- P.SilverRobux, the author's rate of 2026-11-16: 9.75 Robux for 5,000): the "worth" on its card, rounded.
+P.SilverRobux=9.75/5000
+function P.starterWorth()
+ local pack=P.Starter
+ local sum=(P.list[pack.boost]and P.list[pack.boost].robux or 0)+pack.silver*P.SilverRobux
+ sum+=P.FlagRobux+P.CosmeticRobux.common
+ for _,key in ipairs(pack.unlocks)do sum+=P.UnlockRobux[key]or 0 end
+ return math.floor(sum+.5)
+end
 -- A configured product with sales enabled.
 function P.available(key)
  local product=P.list[key]
  return product~=nil and product.id~=0 and product.enabled~=false
 end
--- The starter pack is on offer for this profile at `now` (unix time): never paid anything, not used, and
+-- The starter pack is on offer for this profile at `now` (unix time): not bought yet, and
 -- within the hours since it was first shown (or not shown yet).
 function P.starterOpen(profile,now)
- if not profile or profile.paid then return false end
+ -- (other purchases do not close it since 2026-11-16, the author's decision: it stays its whole 48 hours)
+ if not profile then return false end
  local s=profile.starter
  if s and(s.used or now>=(s.ends or 0))then return false end
  return true

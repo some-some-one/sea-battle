@@ -14,7 +14,7 @@ local DataStoreService=game:GetService("DataStoreService")
 
 local P={}
 P.STORE="SeaBattleProfiles_v1"
-P.VERSION=1
+P.VERSION=2
 P.RECEIPTS=200   -- purchase ids kept against a receipt processed twice
 P.PAYOUTS=60     -- match payout ids kept against a payout granted twice
 P.SOFT_DELAY=20  -- seconds before a soft change is written on its own
@@ -33,7 +33,11 @@ function P.default(now)
   -- chests bought at the first price (shared/Products.chestFirstLeft)
   chestFirst=0,
   -- background music on (shared/Music; the player's switch, kept for next time)
-  music=true}
+  music=true,
+  -- the newcomer's tutorial (shared/Tutorial) finished, skipped or left: the lobby never starts it again
+  tutorial=false,
+  -- the account's first solo match has given its chests (Catalog.FirstSoloChests)
+  firstSolo=false}
 end
 -- An older (or empty) record brought to the current version; unknown fields stay as they are.
 function P.migrate(rec,now)
@@ -49,6 +53,9 @@ function P.migrate(rec,now)
  if type(rec.silver)~='number'or rec.silver~=rec.silver or rec.silver<0 then rec.silver=0 end
  rec.silver=math.floor(rec.silver)
  -- (version steps go here: if rec.v<2 then ... end)
+ -- v2 (2026-11-16): chests are free and opened with golden keys. Chests bought before opened without a
+ -- key, so each one still waiting comes with a key.
+ if(rec.v or 1)<2 then rec.credits.key=(rec.credits.key or 0)+(rec.credits.chest or 0)end
  rec.v=P.VERSION
  return rec
 end
@@ -56,7 +63,7 @@ end
 function P.view(rec)
  return {silver=rec.silver,daily=copy(rec.daily),unlocks=copy(rec.unlocks),owned=copy(rec.owned),equipped=copy(rec.equipped),
   boosts=copy(rec.boosts),credits=copy(rec.credits),paid=rec.paid==true,starter=copy(rec.starter),stats=copy(rec.stats),
-  chestFirst=rec.chestFirst or 0,music=rec.music~=false}
+  chestFirst=rec.chestFirst or 0,music=rec.music~=false,tutorial=rec.tutorial==true}
 end
 local function remember(list,id,max)
  table.insert(list,id);while #list>max do table.remove(list,1)end

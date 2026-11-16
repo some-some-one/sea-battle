@@ -214,5 +214,49 @@ A.Patterns={
   if r>7.6 then return false end
   return(r*1.1-math.atan2(dy,dx)/TAU*3.3)%3.3<1.1
  end),
+ -- (ten more, 2026-11-16, by the author's request; our own tiles)
+ pat_rain=tile(8,8,function(x,y)return(x==1 and y%8<3)or(x==5 and(y+4)%8<3)end),
+ pat_dashes=tile(8,4,function(x,y)return(y==0 and x<4)or(y==2 and x>=4)end),
+ pat_triangles=place(8,8,{'.#.','###'},{{0,0},{4,4}}),
+ -- basket weave: blocks of short lines, across and along in turn
+ pat_weave=tile(8,8,function(x,y)
+  local across=(x<4)==(y<4)
+  return across and y%2==0 or not across and x%2==0
+ end),
+ pat_rings=tile(8,8,function(x,y)local d=math.sqrt((x-3.5)^2+(y-3.5)^2);return math.abs(d-2.6)<.55 end),
+ pat_fish=place(16,16,{
+  '..###..#',
+  '.#####.#',
+  '#.######',
+  '.#####.#',
+  '..###..#'},{{1,2},{9,10}}),
+ pat_shells=place(16,16,{
+  '.#####.',
+  '#.#.#.#',
+  '#.#.#.#',
+  '.#.#.#.',
+  '..###..'},{{1,1},{9,9}}),
+ -- a ship's wheel: rim, hub, eight spokes running out past the rim to handles
+ pat_wheel=tile(16,16,function(x,y)
+  local dx,dy=x-8,y-8;local r=math.sqrt(dx*dx+dy*dy)
+  if math.abs(r-4.6)<.6 or r<1.6 then return true end
+  return(dx==0 or dy==0 or math.abs(dx)==math.abs(dy))and r<=7.1 and r>=1.6
+ end),
+ -- two tentacles winding across the tile (whole sine periods: no seam), with suckers
+ pat_kraken=tile(16,16,function(x,y)
+  local a=8+4.5*math.sin(TAU*x/16)
+  local b=8+4.5*math.sin(TAU*y/16+2)
+  if math.abs(y-a)<.75 or math.abs(x-b)<.75 then return true end
+  return(x+y)%8==0 and math.abs(y-a)<2.2 and math.abs(y-a)>1.2
+ end),
+ pat_lighthouse=place(16,16,{
+  '#...#...#',
+  '.#.###.#.',
+  '...###...',
+  '....#....',
+  '...###...',
+  '...#.#...',
+  '...###...',
+  '..#####..'},{{3,3}},{{13,1},{1,13},{14,12},{11,14}}),
 }
 return A

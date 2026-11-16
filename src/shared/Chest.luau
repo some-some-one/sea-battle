@@ -1,9 +1,12 @@
 --!nonstrict
 -- The chest window (2026-11-12, by the author's request): a chest that gives one random flag or water
--- pattern the player does not own yet.
---  * left: the chest itself and the "Open" button (chests bought earlier wait in the profile);
---  * right: the player's own odds by rarity, how much is left to collect, and the three offers for Robux
---    (1, 3 or 10 chests; an offer whose product has no id yet says so instead of a price).
+-- pattern the player does not own yet. Since 2026-11-16 (the author's decision) chests are free — they drop
+-- from won matches and online top places (Catalog.chestDrops) — and each takes a golden key to open; the
+-- keys are what is sold.
+--  * left: the chest itself and the "Open" button (it buys a key when there is a chest but no key);
+--  * right: the player's own odds by rarity, how much is left to collect, and the three key offers for
+--    Robux (1, 3 or 10 keys; an offer whose product has no id yet says so instead of a price).
+--  * top: how many chests and keys wait.
 -- Opening is a short show over the window: the chest shakes, glows in the colour of the rarity drawn,
 -- bursts open, and a card turns up with the thing, its rarity and name: wear it, open the next one, or done.
 -- The server draws the item (command "chest_open", server/Account.openChest); the show starts at once and
@@ -25,13 +28,26 @@ local W,H=640,404
 local WATER,TINT=Color3.fromRGB(58,120,150),Color3.fromRGB(110,170,196)
 local WOOD,WOOD_DARK,GOLD=Color3.fromRGB(150,92,44),Color3.fromRGB(96,56,26),Color3.fromRGB(240,188,72)
 local BUILD={common=.35,rare=.6,epic=.95,legendary=1.5}   -- seconds of rising glow before the burst
-local OFFER_TEXT={chest_1={'1','chest'},chest_3={'3','chests'},chest_10={'10','chests'}}
-local REASONS={no_chest='Buy a chest first',store='Could not save. Try again.',no_reply='No answer from the server'}
+local OFFER_TEXT={chest_1={'1','key'},chest_3={'3','keys'},chest_10={'10','keys'}}
+local REASONS={no_chest='No chests yet: win matches to get them',no_key='You need a golden key',store='Could not save. Try again.',no_reply='No answer from the server'}
 -- (Luau's string.upper leaves Cyrillic as it is)
 local UPPER={common='COMMON',rare='RARE',epic='EPIC',legendary='LEGENDARY'}
 local function rgb(t)return Color3.fromRGB(t[1],t[2],t[3])end
 local function rarityColor(r)return rgb((Catalog.Rarity[r]or Catalog.Rarity.common).color)end
 
+-- The golden key: the author's own pictures (2026-11-16, made from docs/trailer/goldenkey.png: a gold key and
+-- a charcoal one, the hole cut out; assets/ui/key_gold.png and key_charcoal.png). Gold on the window's dark
+-- tiles, charcoal on the gold tile. `s`: the picture's side in points.
+local KEY_GOLD,KEY_CHARCOAL='rbxassetid://82194758169670','rbxassetid://125786457127449'
+local function keyArt(parent,s,color,z)
+ local img=make('ImageLabel',parent,{Name='Key',AnchorPoint=Vector2.new(.5,.5),BackgroundTransparency=1,Size=UDim2.fromOffset(s,s),
+  Image=color==GOLD and KEY_GOLD or KEY_CHARCOAL,ZIndex=z})
+ return {root=img}
+end
+local function tintKey(key,color)
+ local image=color==GOLD and KEY_GOLD or KEY_CHARCOAL
+ if key.root.Image~=image then key.root.Image=image end
+end
 -- The chest drawn with frames, `s` points wide: {root, lid, body, glow (three rings behind it)}.
 local function chestArt(parent,s,z)
  local root=make('Frame',parent,{Name='Chest',AnchorPoint=Vector2.new(.5,.5),BackgroundTransparency=1,Size=UDim2.fromOffset(s,s*.9),ZIndex=z})
@@ -67,11 +83,15 @@ function K.new(lobby)
  self.shade.Position=UDim2.fromOffset(0,-inset);self.shade.Size=UDim2.new(1,0,1,inset)
  Kit.badge(self.card,'chest',40,C.amber,UDim2.fromOffset(20,14))
  label(self.card,'CHEST',20,Enum.FontWeight.Heavy,C.text,{Position=UDim2.fromOffset(72,14),Size=UDim2.fromOffset(200,40)})
- -- How many chests wait, left of the close button.
+ -- How many chests and keys wait, left of the close button.
  self.countPill=corner(make('Frame',self.card,{AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-62,0,18),Size=UDim2.fromOffset(110,28),BackgroundColor3=C.ink,BackgroundTransparency=.25,ZIndex=Z+2}),14)
  stroke(self.countPill,C.amber,.55,1)
  Icons.image(self.countPill,'chest',16,C.amber,{AnchorPoint=Vector2.new(0,.5),Position=UDim2.new(0,9,.5,0),ZIndex=Z+3})
  self.countText=label(self.countPill,'',13,Enum.FontWeight.Heavy,C.amber,{Position=UDim2.fromOffset(30,0),Size=UDim2.new(1,-36,1,0)})
+ self.keyPill=corner(make('Frame',self.card,{AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-180,0,18),Size=UDim2.fromOffset(96,28),BackgroundColor3=C.ink,BackgroundTransparency=.25,ZIndex=Z+2}),14)
+ stroke(self.keyPill,GOLD,.45,1)
+ local pk=keyArt(self.keyPill,18,GOLD,Z+3);pk.root.Position=UDim2.new(0,18,.5,0)
+ self.keyText=label(self.keyPill,'',13,Enum.FontWeight.Heavy,GOLD,{Position=UDim2.fromOffset(31,0),Size=UDim2.new(1,-37,1,0)})
  -- Left: the stage with the chest, the open button under it.
  self.stage=corner(make('Frame',self.card,{Name='Stage',Position=UDim2.fromOffset(20,68),Size=UDim2.fromOffset(268,246),BackgroundColor3=C.ink,BackgroundTransparency=.3,ClipsDescendants=true,ZIndex=Z+2}),16)
  stroke(self.stage,C.amber,.75,1)
@@ -83,6 +103,8 @@ function K.new(lobby)
  self.openText=label(self.openButton,'OPEN',18,Enum.FontWeight.Heavy,C.dark,{Size=UDim2.fromScale(1,1),TextXAlignment=Enum.TextXAlignment.Center})
  -- Right: what it gives and the odds.
  label(self.card,'A random flag or pattern',17,Enum.FontWeight.Heavy,C.text,{Position=UDim2.fromOffset(308,66),Size=UDim2.fromOffset(312,22)})
+ -- (where chests come from, under the stage)
+ self.how=label(self.card,'Win matches for chests · a golden key opens one',11,Enum.FontWeight.Medium,C.muted,{Position=UDim2.fromOffset(20,384),Size=UDim2.fromOffset(268,14),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=Z+2})
  -- "Details": the chance of every item (Roblox's rule for paid random items: every outcome's odds before
  -- the purchase, behind a button with a word on it; a bare "?" is not enough).
  self.oddsButton=pressable(self.card,{Name='Odds',AnchorPoint=Vector2.new(1,0),Position=UDim2.fromOffset(620,63),Size=UDim2.fromOffset(92,28),BackgroundColor3=C.tile,ZIndex=Z+3},function()
@@ -114,15 +136,15 @@ function K.new(lobby)
   end)
   corner(o.button,14);o.stroke=stroke(o.button,C.robux,.55,1)
   make('UIGradient',o.button,{Rotation=90,Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(175,180,190))})
-  o.icon=Icons.image(o.button,'chest',22,C.amber,{AnchorPoint=Vector2.new(.5,0),Position=UDim2.new(.5,0,0,10),ZIndex=Z+3})
-  o.count=label(o.button,OFFER_TEXT[key][1],24,Enum.FontWeight.Heavy,C.text,{Position=UDim2.fromOffset(0,34),Size=UDim2.new(1,0,0,26),TextXAlignment=Enum.TextXAlignment.Center})
-  o.sub=label(o.button,OFFER_TEXT[key][2],12,Enum.FontWeight.Bold,C.muted,{Position=UDim2.fromOffset(0,60),Size=UDim2.new(1,0,0,14),TextXAlignment=Enum.TextXAlignment.Center})
+  o.keyIcon=keyArt(o.button,40,GOLD,Z+3);o.keyIcon.root.Position=UDim2.new(.5,0,0,24)
+  o.count=label(o.button,OFFER_TEXT[key][1],22,Enum.FontWeight.Heavy,C.text,{Position=UDim2.fromOffset(0,47),Size=UDim2.new(1,0,0,22),TextXAlignment=Enum.TextXAlignment.Center})
+  o.sub=label(o.button,OFFER_TEXT[key][2],11,Enum.FontWeight.Bold,C.muted,{Position=UDim2.fromOffset(0,67),Size=UDim2.new(1,0,0,12),TextXAlignment=Enum.TextXAlignment.Center})
   o.price=corner(make('Frame',o.button,{AnchorPoint=Vector2.new(.5,1),Position=UDim2.new(.5,0,1,-8),Size=UDim2.new(1,-14,0,26),BackgroundColor3=C.card,ZIndex=Z+3}),9)
   o.priceStroke=stroke(o.price,C.robux,.5,1)
   o.priceText=label(o.price,'',13,Enum.FontWeight.Heavy,C.robux,{Size=UDim2.fromScale(1,1),TextXAlignment=Enum.TextXAlignment.Center})
   -- (the larger packs say what they save against single chests; the single one says "first 2" while it
   -- is at the first price)
-  o.tag=corner(make('Frame',o.button,{AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,4,0,-6),Size=UDim2.fromOffset(i==1 and 66 or 46,18),BackgroundColor3=C.red,Visible=false,ZIndex=Z+4}),9)
+  o.tag=corner(make('Frame',o.button,{AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,4,0,-6),Size=UDim2.fromOffset(i==1 and 50 or 46,18),BackgroundColor3=C.red,Visible=false,ZIndex=Z+4}),9)
   o.tagText=label(o.tag,'',10,Enum.FontWeight.Heavy,C.white,{Size=UDim2.fromScale(1,1),TextXAlignment=Enum.TextXAlignment.Center})
   self.offers[i]=o
  end
@@ -138,7 +160,7 @@ function K.new(lobby)
   self.restricted=not ok or type(info)~='table'or info.ArePaidRandomItemsRestricted==true
  end)
  Store.onFinished(function(key,purchased)
-  if self.open and purchased and key and string.sub(key,1,6)=='chest_'then Sfx.play('build');self:say('Paid, the chests are yours')end
+  if self.open and purchased and key and string.sub(key,1,6)=='chest_'then Sfx.play('build');self:say('Paid, the keys are yours')end
  end)
  return self
 end
@@ -229,11 +251,18 @@ function K:singleKey()
 end
 function K:say(text)self.noteText=text;self.noteUntil=os.clock()+4 end
 function K:chests()local p=self.v.profile;return p and p.credits and p.credits.chest or 0 end
+function K:keys()local p=self.v.profile;return p and p.credits and p.credits.key or 0 end
 
 -- Open one chest: the show starts now, the server's answer arrives during it.
 function K:openOne()
  if self.busy then return end
  if self:chests()<1 then Sfx.play('deny');self:say(REASONS.no_chest);if self.show then self:endShow()end;return end
+ -- A chest but no key: the button buys one (the single key's offer).
+ if self:keys()<1 then
+  if self.show then self:endShow()end
+  if self.restricted then Sfx.play('deny');self:say('Key purchases are not available for your account');return end
+  Store.prompt(self:singleKey());return
+ end
  self.busy=true
  local show={t=0,phase='shake',hold=.6}
  self.show=show
@@ -353,7 +382,7 @@ function K:stepShow(dt)
   self.wearButton.Visible=item~=nil
   self.wearText.Text=wearing and 'WORN'or 'WEAR'
   self.wearButton.Active=not wearing and not self.busy
-  local left=self:chests()
+  local left=math.min(self:chests(),self:keys())
   self.nextText.Text=left>0 and('AGAIN ('..left..')')or 'AGAIN'
   self.nextButton.Visible=left>0
  end
@@ -381,8 +410,9 @@ function K:update(dt)
  self.clock+=dt
  self:layout(self.v.gui.AbsoluteSize)
  local p=self.v.profile
- local n=self:chests()
- self.countText.Text=n>0 and('You have: '..n)or 'No chests'
+ local n=self:chests();local keys=self:keys()
+ self.countText.Text=n>0 and(n..(n==1 and ' chest'or ' chests'))or 'No chests'
+ self.keyText.Text=keys..(keys==1 and ' key'or ' keys')
  local owned=p and p.owned or {}
  local odds,left=Catalog.chestOdds(owned)
  for rarity,value in pairs(self.oddsRows)do
@@ -395,11 +425,13 @@ function K:update(dt)
  self.note.Visible=note~=nil;self.left.Visible=note==nil
  if note then self.note.Text=note end
  local firstLeft=self:singleKey()=='chest_first'and Products.chestFirstLeft(p)or 0
- self.left.Text=firstLeft>0 and('First 2 chests for '..(Store.robux('chest_first')or 15)..' R$ each · '..firstLeft..' left')
+ self.left.Text=firstLeft>0 and('First 2 keys for '..(Store.robux('chest_first')or 15)..' R$ each · '..firstLeft..' left')
   or left>0 and('Not collected yet: '..left)or 'You collected everything, chests now give silver'
  self.left.TextColor3=firstLeft>0 and C.amber or C.muted
  -- The open button and the idle chest.
- self.openText.Text=n>1 and('OPEN ('..n..')')or n==1 and 'OPEN'or 'BUY A CHEST'
+ local ready=math.min(n,keys)
+ self.openText.Text=ready>1 and('OPEN ('..ready..')')or ready==1 and 'OPEN'or n>0 and('BUY A KEY · '..Store.label(self:singleKey()))or 'WIN MATCHES FOR CHESTS'
+ self.openText.TextSize=ready>0 and 18 or 15
  self.openButton.Active=n>0 and not self.busy
  self.openText.TextTransparency=n>0 and 0 or .45
  local wiggle=n>0 and math.max(0,math.sin(self.clock*2.2))^8 or 0
@@ -417,7 +449,7 @@ function K:update(dt)
   -- The first-price chest in gold, the rest in the window's own colours.
   o.button.BackgroundColor3=first and C.amber or C.tile
   o.stroke.Color=first and Color3.fromRGB(255,230,170)or C.robux;o.stroke.Transparency=first and .1 or .55
-  o.icon.ImageColor3=first and C.dark or C.amber
+  tintKey(o.keyIcon,first and C.dark or GOLD)
   o.count.TextColor3=first and C.dark or C.text;o.sub.TextColor3=first and C.dark or C.muted
   o.price.BackgroundColor3=first and Color3.fromRGB(70,40,8)or C.card
   o.priceStroke.Color=first and C.amber or C.robux

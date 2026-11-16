@@ -14,9 +14,11 @@ C.Rarity={
 -- Cosmetics: {id, kind = 'flag' | 'pattern', title, rarity, silver (nil: Robux only), prize (may be the
 -- day-7 prize of the daily bonus)}. The art is shared/CosmeticArt under the same id.
 -- Since 2026-11-12 (the author's decision) flags are real countries' flags and four picture flags, and flags and patterns
--- are sold for Robux only (shared/Products), besides the chest and the day-7 prize; silver opens the arsenal.
+-- are sold for Robux (shared/Products), besides the chest and the day-7 prize; silver opens the arsenal.
+-- Since 2026-11-16 (the author's decision) common patterns are also sold for C.CommonPatternSilver silver.
 --  * a flag (pennant) stands beside the country's name on the map and in the leaderboard;
 --  * a pattern lies over the country's own water in a second tint of its colour.
+C.CommonPatternSilver=20000
 local list={
  -- Picture flags of our own (2026-11-12: the only ones kept besides the real flags).
  {id='flag_anchor',kind='flag',title='Anchor',rarity='rare',prize=true},
@@ -63,28 +65,42 @@ local list={
  {id='flag_cc_in',kind='flag',country='IN',title='India',rarity='rare',prize=true},
  {id='flag_cc_id',kind='flag',country='ID',title='Indonesia',rarity='rare',prize=true},
  {id='flag_cc_bd',kind='flag',country='BD',title='Bangladesh',rarity='rare',prize=true},
- -- Patterns, common to legendary (the shop shows them in this order).
+ -- Patterns, common to legendary (the shop shows them in this order). Ten more on 2026-11-16, by the
+ -- author's request, three of them legendary (our own tiles: shared/CosmeticArt).
  {id='pat_ripple',kind='pattern',title='Ripple',rarity='common'},
  {id='pat_stripes',kind='pattern',title='Stripes',rarity='common'},
  {id='pat_dots',kind='pattern',title='Polka Dots',rarity='common'},
  {id='pat_checker',kind='pattern',title='Checkers',rarity='common'},
  {id='pat_zigzag',kind='pattern',title='Zigzag',rarity='common'},
+ {id='pat_rain',kind='pattern',title='Rain',rarity='common'},
+ {id='pat_dashes',kind='pattern',title='Dashes',rarity='common'},
+ {id='pat_triangles',kind='pattern',title='Triangles',rarity='common'},
  {id='pat_wave',kind='pattern',title='Wave',rarity='rare',prize=true},
  {id='pat_grid',kind='pattern',title='Grid',rarity='rare'},
  {id='pat_chevron',kind='pattern',title='Chevron',rarity='rare'},
  {id='pat_bricks',kind='pattern',title='Bricks',rarity='rare'},
  {id='pat_scales',kind='pattern',title='Scales',rarity='rare'},
  {id='pat_crosshatch',kind='pattern',title='Crosshatch',rarity='rare'},
+ {id='pat_weave',kind='pattern',title='Weave',rarity='rare'},
+ {id='pat_rings',kind='pattern',title='Rings',rarity='rare'},
  {id='pat_camo',kind='pattern',title='Camo',rarity='epic'},
  {id='pat_diamonds',kind='pattern',title='Diamonds',rarity='epic'},
  {id='pat_anchors',kind='pattern',title='Anchors',rarity='epic'},
  {id='pat_stars',kind='pattern',title='Stars',rarity='epic'},
+ {id='pat_fish',kind='pattern',title='Fish',rarity='epic'},
+ {id='pat_shells',kind='pattern',title='Shells',rarity='epic'},
  {id='pat_compass',kind='pattern',title='Compass',rarity='legendary'},
  {id='pat_whirlpool',kind='pattern',title='Whirlpool',rarity='legendary'},
+ {id='pat_wheel',kind='pattern',title="Ship's Wheel",rarity='legendary'},
+ {id='pat_kraken',kind='pattern',title='Kraken',rarity='legendary'},
+ {id='pat_lighthouse',kind='pattern',title='Lighthouse',rarity='legendary'},
 }
 C.Cosmetics={}
 C.CosmeticOrder={}
-for _,item in ipairs(list)do C.Cosmetics[item.id]=item;table.insert(C.CosmeticOrder,item.id)end
+for _,item in ipairs(list)do
+ if item.kind=='pattern'and item.rarity=='common'then item.silver=C.CommonPatternSilver end
+ C.Cosmetics[item.id]=item;table.insert(C.CosmeticOrder,item.id)
+end
 -- The arsenal: combat unlocks. {key, title, kind, icon, plain (one sentence: what it does), facts (two
 -- short ones), silver, product (the Robux product that opens the same thing sooner), bit (in the mask a
 -- match keeps for a country)}. Rules and numbers: shared/NavalRules (R.Buildings.battery, R.Weapons.torpedo /
@@ -137,8 +153,9 @@ end
 -- The chest (2026-11-12, by the author's request): one random flag or pattern the
 -- player does not own yet. A rarity is drawn by its odds, then an item of that rarity at random; a rarity
 -- with nothing left drops out and the others share its odds. Never a duplicate.
--- Chests are bought for Robux (shared/Products: 1, 3 or 10) and kept in the profile until opened;
--- when nothing is left to give, an opened chest pays C.ChestSilver instead.
+-- Since 2026-11-16 (the author's decision) chests are free: they drop from matches (C.chestDrops) and wait in
+-- the profile; opening one takes a golden key, and keys are what is sold for Robux (shared/Products: 1, 3
+-- or 10). When nothing is left to give, an opened chest pays C.ChestSilver instead.
 C.ChestOdds={common=.62,rare=.25,epic=.10,legendary=.03}
 C.ChestSilver=1500
 C.RarityOrder={'common','rare','epic','legendary'}
@@ -176,11 +193,47 @@ function C.chestRoll(owned,random,randomInt)
  local ids=pool[chosen]
  return ids[randomInt(#ids)]
 end
+-- The starter pack's pattern: a random one not owned. A legendary one can come too, but each weighs only
+-- C.StarterLegendaryWeight of another (the author's rule, 2026-11-16: rare enough to stay legendary; the card
+-- does not say so). nil when every pattern is owned. random() -> 0..1.
+C.StarterLegendaryWeight=.15
+function C.starterPattern(owned,random)
+ local ids,weights,total={},{},0
+ for _,id in ipairs(C.CosmeticOrder)do
+  local item=C.Cosmetics[id]
+  if item.kind=='pattern'and not(owned and owned[id])then
+   local w=item.rarity=='legendary'and C.StarterLegendaryWeight or 1
+   table.insert(ids,id);table.insert(weights,w);total+=w
+  end
+ end
+ if #ids==0 then return nil end
+ local r=random()*total
+ for i,w in ipairs(weights)do r-=w;if r<0 then return ids[i]end end
+ return ids[#ids]
+end
+-- The starter pack's flag when the player's country is unknown or has no flag here: a random country
+-- flag not owned yet (nil when all are owned).
+function C.randomCountryFlag(owned,randomInt)
+ local ids={}
+ for _,id in ipairs(C.CosmeticOrder)do
+  local item=C.Cosmetics[id]
+  if item.country and not(owned and owned[id])then table.insert(ids,id)end
+ end
+ if #ids==0 then return nil end
+ return ids[randomInt(#ids)]
+end
 -- The country flag of an ISO code (nil when there is none in the catalog).
 function C.countryFlag(code)
  if type(code)~='string'then return nil end
  local id='flag_cc_'..string.lower(code)
  return C.Cosmetics[id]and id or nil
+end
+-- A flag or pattern that has just dropped (a chest, the starter pack, the daily prize) is worn at once
+-- (2026-11-16, by the author's request): owned and put in its slot in the same write.
+function C.giveAndWear(rec,id)
+ local item=C.Cosmetics[id];if not item then return end
+ rec.owned[id]=true
+ if C.Slots[item.kind]then rec.equipped=rec.equipped or {};rec.equipped[item.kind]=id end
 end
 -- What is worn in a slot, only if it is really owned and of that kind (for the match: the flag and the
 -- pattern the others will see).
@@ -189,5 +242,36 @@ function C.worn(profile,slot)
  local item=id and C.Cosmetics[id]
  if item and item.kind==slot and profile.owned and profile.owned[id]then return id end
  return nil
+end
+-- Chests and golden keys a match gives (2026-11-16, by the author's request). Weights are for 0, 1, 2, 3
+-- chests.
+--  * solo, won: easy 0-1, normal 1-2, hard 1-3 (normal and hard always give at least one);
+--  * solo, lost or left: none, except the account's very first solo match (the tutorial's): always 2;
+--  * online: 3rd place 1, 2nd place 2, 1st place 3 and a C.KeyChance chance of a golden key.
+-- A solo win counts only after C.SoloWinMinutes real minutes (a device reports its own solo result).
+C.SoloChestWeights={easy={.5,.5},normal={0,.6,.4},hard={0,.5,.35,.15}}
+C.OnlineChests={3,2,1}
+C.KeyChance=.05
+C.FirstSoloChests=2
+C.SoloWinMinutes=6
+local function weighted(weights,random)
+ local r=random();local acc=0
+ for i,w in ipairs(weights)do acc+=w;if r<acc then return i-1 end end
+ return #weights-1
+end
+-- match: {kind = 'solo' | 'online', difficulty, won, place, quit, first (the account's first solo
+-- match), realMinutes}. random() -> 0..1. -> chests, keys
+function C.chestDrops(match,random)
+ local chests,keys=0,0
+ if match.kind=='solo'then
+  if match.won and not match.quit and(match.realMinutes or 0)>=C.SoloWinMinutes then
+   chests=weighted(C.SoloChestWeights[match.difficulty]or C.SoloChestWeights.normal,random)
+  end
+  if match.first then chests=math.max(chests,C.FirstSoloChests)end
+ elseif match.kind=='online'and not match.quit then
+  chests=C.OnlineChests[match.place or 0]or 0
+  if match.place==1 and random()<C.KeyChance then keys=1 end
+ end
+ return chests,keys
 end
 return C

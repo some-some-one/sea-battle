@@ -266,6 +266,8 @@ function View.new(grid,gui)
   self:setProfile(p)
   -- The silver for the online match just played (shown in the end-of-match card).
   if type(extra)=='table'and extra.payout then self.payout=extra.payout end
+  -- The starter pack just bought: its reward window (shared/StarterOffer).
+  if type(extra)=='table'and type(extra.starter)=='table'and self.lobby then self.lobby.starterOffer:reward(extra.starter)end
  end)
  task.spawn(function()self:request("profile")end)
  self.localMatch=require(script.Parent.LocalMatch).new(self)
@@ -418,6 +420,13 @@ function View:setCell(id,owner)
  self:mark(id)
  local a,b,c,d=self.grid:nb4(id)
  if a>0 then self:mark(a)end;if b>0 then self:mark(b)end;if c>0 then self:mark(c)end;if d>0 then self:mark(d)end
+ -- (the player's border for the front labels: this cell and its neighbours may have joined or left it)
+ local me=self.border and self.borderFor
+ if me then
+  self:borderCheck(id,me)
+  if a>0 then self:borderCheck(a,me)end;if b>0 then self:borderCheck(b,me)end
+  if c>0 then self:borderCheck(c,me)end;if d>0 then self:borderCheck(d,me)end
+ end
  self.labelsDirty=true
 end
 function View:renderChunk(key,location)
@@ -563,31 +572,55 @@ function View:setFronts(me,rows)
  end
 end
 -- One label per front, on the border point nearest the screen centre.
+-- The player's own cells that touch another country (self.border), kept up to date by setCell and built
+-- whole once per player and snapshot: the front labels look only at these. (2026-11-16: the labels
+-- scanned up to 30 000 of the player's cells per front every 0.3 s, a table per cell; with four fronts
+-- that was ≈48 ms a time, more than the whole match step, on a computer.)
+function View:borderCheck(id,me)
+ local o=self.owners
+ if buffer.readu8(o,id-1)==me then
+  local a,b,c,d=self.grid:nb4(id)
+  for k=1,4 do
+   local n=k==1 and a or k==2 and b or k==3 and c or d
+   if n>0 then local x=buffer.readu8(o,n-1);if x>0 and x~=me then self.border[id]=true;return end end
+  end
+ end
+ self.border[id]=nil
+end
 function View:updateFrontLabels(camera)
  self.frontAnchors=self.frontAnchors or {}
  local center=camera.CFrame.Position;local seen={}
- for _,front in ipairs(self.fronts)do
-  local best,distance
-  if self.image then
-   -- Nearest of your cells touching this enemy (a bounded scan keeps huge countries cheap).
-   local me=self.playerId;local enemy=front.enemy;local scanned=0
-   for id in pairs(self.owned[me]or {})do
-    scanned+=1;if scanned>30000 then break end
-    for _,n in ipairs(self.grid:neighborIds(id))do if buffer.readu8(self.owners,n-1)==enemy then
-     local c=self.grid:getCell(id);local point=self.grid:cellToWorld(c.x,c.y)
-     local d=(point.X-center.X)^2+(point.Z-center.Z)^2
-     if not distance or d<distance then best,distance=Vector3.new(point.X,.03,point.Z),d end
-     break
-    end end
+ local me=self.playerId
+ local best,distance={},{}
+ if self.image and me and #self.fronts>0 then
+  if self.borderFor~=me or not self.border then
+   self.border={};self.borderFor=me
+   for id in pairs(self.owned[me]or {})do self:borderCheck(id,me)end
+  end
+  local wanted={};for _,front in ipairs(self.fronts)do wanted[front.enemy]=true end
+  local grid,o=self.grid,self.owners;local w,h,tile=grid.width,grid.height,grid.data.tileSize
+  for id in pairs(self.border)do
+   local a,b,c,d=grid:nb4(id)
+   for k=1,4 do
+    local n=k==1 and a or k==2 and b or k==3 and c or d
+    local x=n>0 and buffer.readu8(o,n-1)or 0
+    if wanted[x]then
+     local px,pz=((id-1)%w+.5-w/2)*tile,((id-1)//w+.5-h/2)*tile
+     local dd=(px-center.X)^2+(pz-center.Z)^2
+     if not distance[x]or dd<distance[x]then distance[x]=dd;best[x]=Vector3.new(px,.03,pz)end
+    end
    end
   end
+ end
+ for _,front in ipairs(self.fronts)do
+  local anchor,dist=best[front.enemy],distance[front.enemy]
   for _,chunk in pairs(self.chunks)do
    for _,point in ipairs(chunk.front and chunk.front[front.key]or {})do
     local d=(point.X-center.X)^2+(point.Z-center.Z)^2
-    if not distance or d<distance then best,distance=point,d end
+    if not dist or d<dist then anchor,dist=point,d end
    end
   end
-  self.frontAnchors[front.key]=best;seen[front.key]=true
+  self.frontAnchors[front.key]=anchor;seen[front.key]=true
  end
  for key,label in pairs(self.frontLabels)do if not seen[key]then label:Destroy();self.frontLabels[key]=nil;self.frontAnchors[key]=nil end end
 end
@@ -604,7 +637,7 @@ function View:receive(delta)
   self.epoch=s.epoch;self.revision=s.revision;self.phase=s.phase;self.factions={};self.battle=nil
   if self.battleUI then self.battleUI:clearUnits()end
   self:applyRoster(s.roster);self:applyRows(s.rows);self:applyBattle(s)
-  self.owners=s.cellOwners;self.owned={};self.anchors={};self.pending={};self.pendingHead=1
+  self.owners=s.cellOwners;self.owned={};self.anchors={};self.pending={};self.pendingHead=1;self.border=nil;self.borderFor=nil
   for i=1,Rules.MaxParticipants do self.owned[i]={}end
   for _,name in pairs(self.countryLabels)do name.Visible=false end;self.nameState=nil
   if self.image then self.image:clear();self.pixelColors={};self.colorKeys={}
@@ -844,6 +877,9 @@ function View:send(action,value)
    -- A refused order is also a notice, so it is seen wherever the eyes are.
    if not r.ok and self.battleUI then self.battleUI:toast(self.message,'bad')end
    if r.ok and r.reason=='allied'and self.battleUI then self.battleUI:toast(self.message,'good',nil,'alliance')end
+   -- (the newcomer's tutorial follows the orders it asks for)
+   local tutorial=self.lobby and self.lobby.tutorial
+   if tutorial then tutorial:onCommand(action,value,r.ok==true)end
   else self.message="No answer from the server. Try again."end
   self.busy=false;self.needsHUD=true
   local nextOne=self.queuedCommand;self.queuedCommand=nil

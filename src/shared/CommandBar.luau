@@ -201,8 +201,10 @@ function CB:shopButton(parent,desktop)
  local icon=Icons.image(b,"shop",desktop and 26 or 20,SHOP_INK,{Name="Glyph",AnchorPoint=Vector2.new(.5,0),Position=UDim2.new(.5,0,0,desktop and 7 or 4),ZIndex=24})
  local word=text(b,"Shop",desktop and 12 or 10,Enum.FontWeight.Heavy,SHOP_INK,{AnchorPoint=Vector2.new(.5,1),Position=UDim2.new(.5,0,1,desktop and -5 or -3),
   Size=UDim2.new(1,0,0,14),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=24})
- -- The light that sweeps across.
- local shine=make("Frame",b,{Name="Shine",BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=.45,BorderSizePixel=0,AnchorPoint=Vector2.new(.5,.5),
+ -- The light that sweeps across, in a CanvasGroup that clips it to the button's rounded corners (the
+ -- button's own ClipsDescendants clips to a rectangle: the light showed in the corners).
+ local layer=corner(make("CanvasGroup",b,{Name="ShineLayer",BackgroundTransparency=1,Size=UDim2.fromScale(1,1),ZIndex=23}),10)
+ local shine=make("Frame",layer,{Name="Shine",BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=.45,BorderSizePixel=0,AnchorPoint=Vector2.new(.5,.5),
   Size=UDim2.new(0,14,2,0),Rotation=20,Position=UDim2.new(-.4,0,.5,0),ZIndex=23})
  make("UIGradient",shine,{Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(.5,0),NumberSequenceKeypoint.new(1,1)})})
  -- The red badge: how much there is still to open (until the shop has been opened).

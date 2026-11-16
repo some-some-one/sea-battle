@@ -155,7 +155,10 @@ function Game:_assign(id,owner)
   for who in pairs(affected)do
    local f=who>0 and self.factions[who]
    if f then for _,order in pairs(Game.ordersOf(f))do
-    if order.attackOwner>0 then for _,n in ipairs(cells)do self:_enqueue(f,order,n,0)end end
+    -- (only cells this order queued or could queue: _enqueue returns at once for the others)
+    if order.attackOwner>0 then local seen,target=order.seen,order.attackOwner
+     for _,n in ipairs(cells)do if seen[n]or buffer.readu8(cellsBuf,n-1)==target then self:_enqueue(f,order,n,0)end end
+    end
    end end
   end
  end
@@ -246,29 +249,54 @@ function Game:thin(id,owner)
  if right and down and at(x+1,y+1)then return false end
  return true
 end
+-- Visited marks for the searches below: one u32 per cell holding the number of the search that last
+-- saw it, so a search starts with nothing to clear and no table to fill (2026-11-16: with several
+-- attacks at once these searches' `seen` tables were a large share of a phone's step).
+local function stampRange(self,span)
+ local s=self.stampBuf
+ if not s or buffer.len(s)~=self.grid.count*4 then s=buffer.create(self.grid.count*4);self.stampBuf=s;self.stampGen=0 end
+ local base=self.stampGen
+ if base+span>=4294967295 then buffer.fill(s,0,0);base=0 end
+ self.stampGen=base+span
+ return s,base
+end
+local function stamps(self)local s,base=stampRange(self,1);return s,base+1 end
 -- A strip swept away or a cell taken by force (set aside because it splits the defender) can cut the
 -- defender in parts. Every part but its main body is encircled and goes to the attacker as well, so no
 -- pixel pocket is left behind. A part that keeps growing past PocketLimit counts as a main body.
+-- (Each part's cells carry the part's own mark. A search that runs into another part's cells is part of
+-- a main body that an earlier search left unfinished: only a main body can have unvisited cells next to
+-- it. It stops there and is dropped, since a main body is never taken; before 2026-11-16 it went on to
+-- PocketLimit cells again and again along the same body.)
 function Game:takePockets(f,order,cells,defender)
- local limit=R.PocketLimit;local parts={};local seen={}
+ local limit=R.PocketLimit;local parts={}
+ local span=#cells*4+1;local seen,base=stampRange(self,span);local top=base+span;local mark=base
  local grid,buf=self.grid,self.cells
  for _,from in ipairs(cells)do
   local s1,s2,s3,s4=grid:nb4(from)
   for j=1,4 do
    local start=j==1 and s1 or j==2 and s2 or j==3 and s3 or s4
-   if start>0 and buffer.readu8(buf,start-1)==defender and not seen[start]then
-    local part={start};seen[start]=true;local head=1
-    while head<=#part and #part<=limit do
-     if head%64==0 then Coop.check()end
-     local id=part[head];head+=1
-     local n1,n2,n3,n4=grid:nb4(id)
-     for k=1,4 do
-      local n=k==1 and n1 or k==2 and n2 or k==3 and n3 or n4
-      if n>0 and not seen[n]and buffer.readu8(buf,n-1)==defender then seen[n]=true;table.insert(part,n)end
+   if start<=0 or buffer.readu8(buf,start-1)~=defender then continue end
+   local v0=buffer.readu32(seen,(start-1)*4)
+   if v0>base and v0<=top then continue end
+   mark+=1
+   local part={start};buffer.writeu32(seen,(start-1)*4,mark);local head=1;local joined=false
+   while head<=#part and #part<=limit do
+    if head%64==0 then Coop.check()end
+    local id=part[head];head+=1
+    local n1,n2,n3,n4=grid:nb4(id)
+    for k=1,4 do
+     local n=k==1 and n1 or k==2 and n2 or k==3 and n3 or n4
+     if n>0 and buffer.readu8(buf,n-1)==defender then
+      local v=buffer.readu32(seen,(n-1)*4)
+      if v>base and v<=top then
+       if v~=mark then joined=true;break end
+      else buffer.writeu32(seen,(n-1)*4,mark);table.insert(part,n)end
      end
     end
-    part.big=#part>limit;table.insert(parts,part)
+    if joined then break end
    end
+   if not joined then part.big=#part>limit;table.insert(parts,part)end
   end
  end
  if #parts<2 then return end
@@ -318,10 +346,15 @@ function Game:canEnter(owner,id,order)
 end
 function Game:_enqueue(f,order,id,cost,origin)
  local previous=order.seen[id]
- -- support: own neighbours (none = not adjacent)
+ local buf=self.cells;local current=buffer.readu8(buf,id-1)
+ -- (a cell of somebody else that this order never queued: nothing to add or drop. Most calls are these:
+ -- every capture next to a front asks each running attack about five cells, 2026-11-16)
+ if not previous and current~=order.attackOwner then return end
+ -- support: own neighbours (none = not adjacent); canEnter inlined
  local support=0
- if self:canEnter(f.id,id,order)then
-  local buf,me=self.cells,f.id;local a,b,c,d=self.grid:nb4(id)
+ local me=f.id
+ if current~=me and buffer.readu8(self.grid.waterMask,id-1)==1 and current==(order.attackOwner or 0)then
+  local a,b,c,d=self.grid:nb4(id)
   if a>0 and buffer.readu8(buf,a-1)==me then support+=1 end
   if b>0 and buffer.readu8(buf,b-1)==me then support+=1 end
   if c>0 and buffer.readu8(buf,c-1)==me then support+=1 end
@@ -374,17 +407,19 @@ function Game:preservesFront(id,owner)
  if #neighbors<2 then return true end
  local w=grid.width;local cx,cy=(id-1)%w,(id-1)//w
  local function connected(limit,localOnly)
-  local seen={[id]=true,[neighbors[1]]=true};local q={neighbors[1]};local head,found=1,1
-  local needed={};for i=2,#neighbors do needed[neighbors[i]]=true end
+  local seen,gen=stamps(self)
+  buffer.writeu32(seen,(id-1)*4,gen);buffer.writeu32(seen,(neighbors[1]-1)*4,gen)
+  local q={neighbors[1]};local head,found=1,1
+  local want2,want3,want4=neighbors[2],neighbors[3],neighbors[4]
   while head<=#q and head<=limit do
    local cell=q[head];head+=1
    local n1,n2,n3,n4=grid:nb4(cell)
    for k=1,4 do
     local n=k==1 and n1 or k==2 and n2 or k==3 and n3 or n4
-    if n>0 and not seen[n]and buffer.readu8(buf,n-1)==owner then
+    if n>0 and buffer.readu8(buf,n-1)==owner and buffer.readu32(seen,(n-1)*4)~=gen then
     if not localOnly or(math.abs(cx-(n-1)%w)<=1 and math.abs(cy-(n-1)//w)<=1)then
-     seen[n]=true;table.insert(q,n)
-     if needed[n]then found+=1;if found==#neighbors then return true end end
+     buffer.writeu32(seen,(n-1)*4,gen);table.insert(q,n)
+     if n==want2 or n==want3 or n==want4 then found+=1;if found==#neighbors then return true end end
     end
    end end
   end
